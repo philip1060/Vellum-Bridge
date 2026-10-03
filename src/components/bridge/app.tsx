@@ -565,8 +565,26 @@ function PluginPanel() {
     <section className="rise">
       <h2 className="font-display text-2xl font-medium tracking-tight">SillyTavern plugin</h2>
       <p className="mt-1 text-sm leading-normal text-muted">
-        Install it once. After that, a refresh pulls the vault, or a bundle file brings a private shelf across — including personas, which SillyTavern will not take as a loose file.
+        The extension is its own folder, separate from the vault. It lives on the front of this site under plugins.
       </p>
+      <ul className="mt-4 rounded-xl bg-surface p-4 font-mono text-xs leading-relaxed text-muted">
+        <li className="text-fg">plugins/</li>
+        {(
+          [
+            ["manifest.json", "manifest.json"],
+            ["index.js", "index.js"],
+            ["style.css", "style.css"],
+            ["settings.html", "settings.html"],
+            ["README.md", "README.md"],
+          ] as const
+        ).map(([label, file]) => (
+          <li key={file} className="pl-4">
+            <a className="text-fg underline decoration-line underline-offset-2" href={`/plugins/vellum-bridge/${file}`}>
+              vellum-bridge/{label}
+            </a>
+          </li>
+        ))}
+      </ul>
       {health ? <p className="mt-3 text-sm text-fg">{health}</p> : null}
 
       <ol className="mt-5 space-y-3 text-sm leading-normal text-muted">

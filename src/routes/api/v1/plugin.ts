@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import indexJs from "../../../../public/st/vellum-bridge/index.js?raw";
-import manifest from "../../../../public/st/vellum-bridge/manifest.json?raw";
-import readme from "../../../../public/st/vellum-bridge/README.md?raw";
-import settings from "../../../../public/st/vellum-bridge/settings.html?raw";
-import style from "../../../../public/st/vellum-bridge/style.css?raw";
+import indexJs from "../../../../public/plugins/vellum-bridge/index.js?raw";
+import manifest from "../../../../public/plugins/vellum-bridge/manifest.json?raw";
+import readme from "../../../../public/plugins/vellum-bridge/README.md?raw";
+import settings from "../../../../public/plugins/vellum-bridge/settings.html?raw";
+import style from "../../../../public/plugins/vellum-bridge/style.css?raw";
 import { empty, bytes } from "@/lib/vellum/http";
 import { textFile, zipStore } from "@/lib/vellum/zip";
 
