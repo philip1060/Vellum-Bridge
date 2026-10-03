@@ -28,6 +28,64 @@ export function toV2Card(v3: Record<string, unknown>): Record<string, unknown> {
   return { spec: "chara_card_v2", spec_version: "2.0", data: v3.data };
 }
 
+export function personaToCard(item: VaultItem): Record<string, unknown> {
+  const persona = item.persona ?? {
+    name: item.name,
+    title: item.name,
+    description: item.blurb,
+    lorebookName: "",
+  };
+  return {
+    spec: "chara_card_v3",
+    spec_version: "3.0",
+    data: {
+      name: persona.name,
+      description: persona.description,
+      personality: "",
+      scenario: "",
+      first_mes: "",
+      mes_example: "",
+      creator_notes: "",
+      system_prompt: "",
+      post_history_instructions: "",
+      alternate_greetings: [],
+      tags: item.tags,
+      creator: item.creator,
+      character_version: "1.0",
+      extensions: {
+        vellum_persona: {
+          title: persona.title || persona.name,
+          lorebook: persona.lorebookName || "",
+        },
+      },
+    },
+  };
+}
+
+export function toLorebookV3(book: Lorebook) {
+  return {
+    spec: "lorebook_v3",
+    data: {
+      name: book.name,
+      description: book.description,
+      scan_depth: book.scan_depth,
+      token_budget: book.token_budget,
+      recursive_scanning: book.recursive_scanning,
+      entries: book.entries.map((entry) => ({
+        keys: entry.keys,
+        secondary_keys: entry.secondary_keys,
+        content: entry.content,
+        comment: entry.comment,
+        enabled: entry.enabled,
+        constant: entry.constant,
+        selective: entry.selective,
+        insertion_order: entry.insertion_order,
+        position: entry.position,
+      })),
+    },
+  };
+}
+
 function toEmbeddedBook(book: Lorebook) {
   return {
     name: book.name,
@@ -135,7 +193,7 @@ export function toSillyTavern(item: VaultItem): StPayload {
     id: item.id,
     kind: "persona",
     name: item.name,
-    card: null,
+    card: personaToCard({ ...item, persona }),
     world: book && book.entries.length ? toWorldInfo(book) : null,
     worldName: persona.lorebookName || (book ? book.name : null),
     persona,

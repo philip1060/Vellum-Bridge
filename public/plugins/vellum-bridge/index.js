@@ -89,6 +89,49 @@ function utf8ToBase64(text) {
     return btoa(parts.join(""));
 }
 
+function extractCharacterJson(pngBuffer) {
+    const bytes = new Uint8Array(pngBuffer);
+    if (bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
+    const view = new DataView(pngBuffer);
+    const chunks = [];
+    let offset = 8;
+    while (offset + 12 <= bytes.length) {
+        const length = view.getUint32(offset, false);
+        const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+        const start = offset + 8;
+        const end = start + length;
+        if (end + 4 > bytes.length) break;
+        if (type === "tEXt") {
+            const data = bytes.subarray(start, end);
+            const nul = data.indexOf(0);
+            if (nul !== -1) {
+                chunks.push({
+                    keyword: new TextDecoder().decode(data.subarray(0, nul)),
+                    text: new TextDecoder().decode(data.subarray(nul + 1)),
+                });
+            }
+        } else if (type === "IEND") break;
+        offset = end + 4;
+    }
+    for (const keyword of ["ccv3", "chara"]) {
+        const chunk = chunks.find((entry) => entry.keyword.toLowerCase() === keyword);
+        if (!chunk) continue;
+        try {
+            return JSON.parse(chunk.text);
+        } catch {
+            /* base64 */
+        }
+        try {
+            const binary = atob(chunk.text);
+            const raw = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+            return JSON.parse(new TextDecoder().decode(raw));
+        } catch {
+            /* next keyword */
+        }
+    }
+    return null;
+}
+
 function safeFileName(name) {
     const cleaned = String(name || "import").replace(/[<>:"/\\|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
     return (cleaned || "import").slice(0, 80);
@@ -169,6 +212,20 @@ function adaptPayload(input) {
             ...(Array.isArray(input.lorebooks) ? input.lorebooks.flatMap((entry) => adaptPayload(entry)) : []),
             ...(Array.isArray(input.personas) ? input.personas.flatMap((entry) => adaptPayload({ ...entry, kind: "persona" })) : []),
         ];
+    }
+    if (input.spec === "lorebook_v3" && input.data && typeof input.data === "object") return adaptPayload(input.data);
+    const markedData = input.data && typeof input.data === "object" ? input.data : input;
+    const marker = markedData.extensions && markedData.extensions.vellum_persona;
+    if (marker && (markedData.name || markedData.description)) {
+        return adaptPayload({
+            kind: "persona",
+            name: markedData.name || "Persona",
+            description: markedData.description || "",
+            title: marker.title || markedData.name || "Persona",
+            lorebookName: marker.lorebook || marker.lorebookName || "",
+            tags: markedData.tags || [],
+            creator: markedData.creator || "",
+        });
     }
     const spec = String(input.spec || "");
     const data = input.data && typeof input.data === "object" ? input.data : input;
@@ -362,14 +419,39 @@ function paintPortrait(name) {
     });
 }
 
-async function cardPng(st) {
-    const portrait = await paintPortrait(st.name);
-    const base = await portrait.arrayBuffer();
+async function cardPng(st, portrait) {
+    const portraitBlob = await resolvePortrait(st.name, portrait);
+    const base = await portraitBlob.arrayBuffer();
     const v3 = st.card;
     const v2 = { spec: "chara_card_v2", spec_version: "2.0", data: v3.data };
     let next = injectTextChunk(base, "chara", utf8ToBase64(JSON.stringify(v2)));
     next = injectTextChunk(next, "ccv3", utf8ToBase64(JSON.stringify(v3)));
     return new Blob([next], { type: "image/png" });
+}
+
+async function blobToPng(blob) {
+    const head = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+    if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return blob;
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const g = canvas.getContext("2d");
+    g.drawImage(bitmap, 0, 0);
+    return new Promise((resolve, reject) => {
+        canvas.toBlob((out) => (out ? resolve(out) : reject(new Error("Could not use that picture"))), "image/png");
+    });
+}
+
+async function resolvePortrait(name, portrait) {
+    if (portrait && portrait.base64) {
+        const binary = atob(portrait.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return blobToPng(new Blob([bytes], { type: portrait.contentType || "application/octet-stream" }));
+    }
+    if (portrait instanceof Blob) return blobToPng(portrait);
+    return paintPortrait(name);
 }
 
 function ctx() {
@@ -452,8 +534,8 @@ async function saveWorld(name, data) {
     return clean;
 }
 
-async function importCard(st) {
-    const png = await cardPng(st);
+async function importCard(st, portrait) {
+    const png = await cardPng(st, portrait);
     const file = new File([png], `${safeFileName(st.name)}.png`, { type: "image/png" });
     const form = new FormData();
     form.append("avatar", file);
@@ -474,8 +556,8 @@ async function importCard(st) {
     }
 }
 
-async function importPersona(st) {
-    const png = await paintPortrait(st.persona.name);
+async function importPersona(st, portrait) {
+    const png = await resolvePortrait(st.persona.name, portrait);
     const fileName = `${safeFileName(st.persona.name)}.png`;
     const file = new File([png], fileName, { type: "image/png" });
     const form = new FormData();
@@ -499,6 +581,7 @@ async function importPersona(st) {
 
 async function importOne(item, saveEmbedded) {
     const st = item._remote ? await fetchSt(item) : toSillyTavern(item);
+    const portrait = item._portrait || null;
     if (st.kind === "lorebook") {
         if (!st.world) throw new Error(`${st.name} has no entries`);
         await saveWorld(st.worldName || st.name, st.world);
@@ -506,15 +589,16 @@ async function importOne(item, saveEmbedded) {
     }
     if (st.kind === "persona") {
         if (st.world && st.worldName) await saveWorld(st.worldName, st.world);
-        await importPersona(st);
+        await importPersona(st, portrait);
         return `Persona “${st.persona.name}”`;
     }
-    await importCard(st);
+    await importCard(st, portrait);
     if (saveEmbedded && st.world && st.worldName) await saveWorld(st.worldName, st.world);
     return `Card “${st.name}”`;
 }
 
 const state = { items: [], log: "" };
+let pendingFileMode = "auto";
 
 function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -566,38 +650,14 @@ function render(root) {
         ]));
     }
 
-    const file = el("input", { type: "file", accept: "application/json,.json", id: "vb-file" });
-    file.addEventListener("change", async () => {
-        const picked = file.files && file.files[0];
-        file.value = "";
-        if (!picked) return;
-        try {
-            const parsed = JSON.parse(await picked.text());
-            let items = [];
-            const root = siteRoot(settings().vaultUrl);
-            if (root) {
-                try {
-                    const res = await fetch(`${root}/api/v1/adapt`, {
-                        method: "POST",
-                        headers: { "content-type": "application/json", ...authHeaders() },
-                        body: JSON.stringify(parsed),
-                    });
-                    if (res.ok) {
-                        const body = await res.json();
-                        items = (body.items || []).map((item) => ({ ...item, _remote: false, _label: "Bundle", _checked: true }));
-                    }
-                } catch {
-                    items = [];
-                }
-            }
-            if (!items.length) items = adaptPayload(parsed).map((item) => ({ ...item, _remote: false, _label: "Bundle", _checked: true }));
-            if (!items.length) throw new Error("That file had no cards, lorebooks, or personas.");
-            state.items = items;
-            state.log = `${items.length} ready from ${picked.name}. Import when you are.`;
-        } catch (error) {
-            state.log = error.message;
-        }
-        render(root);
+    const file = el("input", { type: "file", accept: "application/json,.json,image/png,.png", id: "vb-file" });
+    file.addEventListener("change", () => {
+        void ingestFile(file, root, pendingFileMode);
+    });
+    const link = el("input", {
+        type: "url",
+        id: "vb-link",
+        placeholder: "https://vellum.thecentralempire.com/c/snow-e1716794",
     });
 
     root.append(
@@ -607,8 +667,23 @@ function render(root) {
         el("label", { class: "vb-check" }, [saveEmbedded, "Also save a card's lorebook as its own world"]),
         el("div", { class: "vb-actions" }, [
             el("button", { type: "button", class: "menu_button", onclick: () => refresh(root) }, ["Refresh shelf"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => file.click() }, ["Import bundle"]),
             el("button", { type: "button", class: "menu_button", onclick: () => runImport(root) }, ["Import selected"]),
+        ]),
+        el("p", { class: "vb-note" }, ["Import by link, or by file. A persona file uses the tavern description."]),
+        el("label", {}, ["Vellum link", link]),
+        el("div", { class: "vb-actions" }, [
+            el("button", { type: "button", class: "menu_button", onclick: () => importLink(root, link.value) }, ["Import link"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => { pendingFileMode = "auto"; file.click(); } }, ["Import file"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => { pendingFileMode = "persona"; file.click(); } }, ["Import file as persona"]),
+        ]),
+        el("p", { class: "vb-note" }, ["Export what is open. Persona PNG keeps the description in the tavern description field."]),
+        el("div", { class: "vb-actions" }, [
+            el("button", { type: "button", class: "menu_button", onclick: () => exportCharacter(root, "png") }, ["Character PNG"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => exportCharacter(root, "json") }, ["Character JSON"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => exportWorlds(root, "json") }, ["Lorebook JSON"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => exportWorlds(root, "v3") }, ["Lorebook v3"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => exportPersona(root, "png") }, ["Persona PNG"]),
+            el("button", { type: "button", class: "menu_button", onclick: () => exportPersona(root, "json") }, ["Persona JSON"]),
         ]),
         file,
         list,
@@ -678,6 +753,261 @@ async function runImport(root) {
     state.log = lines.join("\n");
     render(root);
     if (typeof toastr !== "undefined") toastr.success("Vellum import finished");
+}
+
+function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function readImportFile(file) {
+    if (file.type === "image/png" || /\.png$/i.test(file.name)) {
+        const json = extractCharacterJson(await file.arrayBuffer());
+        if (!json) throw new Error(`${file.name} has no character card in it.`);
+        return json;
+    }
+    try {
+        return JSON.parse(await file.text());
+    } catch {
+        throw new Error(`${file.name} is not JSON or a card PNG.`);
+    }
+}
+
+async function ingestFile(input, root, mode) {
+    const picked = input.files && input.files[0];
+    input.value = "";
+    if (!picked) return;
+    try {
+        let parsed = await readImportFile(picked);
+        if (mode === "persona") {
+            const data = parsed.data && typeof parsed.data === "object" ? parsed.data : parsed;
+            parsed = {
+                kind: "persona",
+                name: data.name || "Persona",
+                description: data.description || "",
+                title: data.name || "Persona",
+                lorebookName: "",
+            };
+        }
+        const items = adaptPayload(parsed).map((item) => ({ ...item, _remote: false, _label: picked.name, _checked: true }));
+        if (!items.length) throw new Error("That file had no cards, lorebooks, or personas.");
+        state.items = items;
+        state.log = `${items.length} ready from ${picked.name}. Import when you are.`;
+    } catch (error) {
+        state.log = error.message;
+    }
+    render(root);
+}
+
+async function importLink(root, url) {
+    rememberFrom();
+    const bridge = siteRoot(settings().vaultUrl) || siteRoot(settings().personalUrl);
+    if (!bridge) {
+        state.log = "Set the bridge address first. The link itself can be any Vellum page.";
+        render(root);
+        return;
+    }
+    state.log = "Reading that link…";
+    render(root);
+    try {
+        const res = await fetch(`${bridge}/api/v1/link`, {
+            method: "POST",
+            headers: { "content-type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ url: String(url || "").trim() }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "That link did not import.");
+        const items = body.items || [];
+        if (!items.length) throw new Error("That link had nothing to import.");
+        const lines = [];
+        for (const item of items) {
+            item._portrait = body.portrait || null;
+            item._remote = false;
+            lines.push(await importOne(item, settings().saveEmbeddedWorlds !== false));
+        }
+        lines.push("Done.");
+        state.log = lines.join("\n");
+    } catch (error) {
+        state.log = error.message;
+    }
+    render(root);
+}
+
+function currentCharacter() {
+    const context = ctx();
+    const id = context.characterId;
+    const list = context.characters || [];
+    if (id == null || id < 0 || !list[id]) throw new Error("Open a character first.");
+    const ch = list[id];
+    let data = ch.data;
+    if (typeof data === "string") {
+        try { data = JSON.parse(data); } catch { data = null; }
+    }
+    data = data && typeof data === "object" ? { ...data } : {};
+    data.name = data.name || ch.name || "Character";
+    data.description = data.description ?? ch.description ?? "";
+    data.personality = data.personality ?? ch.personality ?? "";
+    data.scenario = data.scenario ?? ch.scenario ?? "";
+    data.first_mes = data.first_mes ?? ch.first_mes ?? "";
+    data.mes_example = data.mes_example ?? ch.mes_example ?? "";
+    data.creator_notes = data.creator_notes ?? ch.creator_notes ?? "";
+    data.system_prompt = data.system_prompt ?? ch.system_prompt ?? "";
+    data.post_history_instructions = data.post_history_instructions ?? ch.post_history_instructions ?? "";
+    data.alternate_greetings = data.alternate_greetings || ch.alternate_greetings || [];
+    data.tags = data.tags || ch.tags || [];
+    data.creator = data.creator || ch.creator || "";
+    data.character_version = data.character_version || ch.character_version || "1.0";
+    return { ch, card: { spec: "chara_card_v3", spec_version: "3.0", data } };
+}
+
+async function exportCharacter(root, format) {
+    try {
+        const { ch, card } = currentCharacter();
+        if (format === "json") {
+            downloadBlob(new Blob([JSON.stringify(card, null, 2)], { type: "application/json" }), `${safeFileName(card.data.name)}.json`);
+            state.log = `Exported ${card.data.name} as card JSON.`;
+        } else {
+            let portrait = null;
+            if (ch.avatar) {
+                const res = await fetch(`/thumbnail?type=avatar&file=${encodeURIComponent(ch.avatar)}`);
+                if (res.ok) portrait = await res.blob();
+            }
+            downloadBlob(await cardPng({ name: card.data.name, card }, portrait), `${safeFileName(card.data.name)}.png`);
+            state.log = `Exported ${card.data.name} as a tavern PNG.`;
+        }
+    } catch (error) {
+        state.log = error.message;
+    }
+    render(root);
+}
+
+function personaState() {
+    const context = ctx();
+    const power = context.powerUserSettings || context.power_user || {};
+    const avatar = context.userAvatar || context.user_avatar || power.default_persona || "";
+    const personas = power.personas || {};
+    const descriptions = power.persona_descriptions || {};
+    const name = personas[avatar] || context.name1 || "";
+    if (!name && !avatar) throw new Error("Open a persona first.");
+    const sheet = descriptions[avatar];
+    const description = typeof sheet === "string" ? sheet : String((sheet && sheet.description) || "");
+    const lorebookName = sheet && typeof sheet === "object" ? String(sheet.lorebook || "") : "";
+    return { name: name || "Persona", description, lorebookName, avatar };
+}
+
+function personaCard(sheet) {
+    return {
+        spec: "chara_card_v3",
+        spec_version: "3.0",
+        data: {
+            name: sheet.name,
+            description: sheet.description,
+            personality: "",
+            scenario: "",
+            first_mes: "",
+            mes_example: "",
+            creator_notes: "",
+            system_prompt: "",
+            post_history_instructions: "",
+            alternate_greetings: [],
+            tags: [],
+            creator: "",
+            character_version: "1.0",
+            extensions: { vellum_persona: { title: sheet.name, lorebook: sheet.lorebookName } },
+        },
+    };
+}
+
+async function exportPersona(root, format) {
+    try {
+        const sheet = personaState();
+        const card = personaCard(sheet);
+        if (format === "json") {
+            downloadBlob(new Blob([JSON.stringify(card, null, 2)], { type: "application/json" }), `${safeFileName(sheet.name)}.json`);
+            state.log = `Exported ${sheet.name} as card JSON. The description is the persona.`;
+        } else {
+            let portrait = null;
+            if (sheet.avatar) {
+                const urls = [`/thumbnail?type=persona&file=${encodeURIComponent(sheet.avatar)}`, `/avatars/${encodeURIComponent(sheet.avatar)}`];
+                for (const url of urls) {
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        portrait = await res.blob();
+                        break;
+                    }
+                }
+            }
+            downloadBlob(await cardPng({ name: sheet.name, card }, portrait), `${safeFileName(sheet.name)}.png`);
+            state.log = `Exported ${sheet.name} as a tavern PNG. The description is the persona.`;
+        }
+    } catch (error) {
+        state.log = error.message;
+    }
+    render(root);
+}
+
+function activeWorldNames() {
+    const context = ctx();
+    const names = [];
+    if (Array.isArray(context.selectedWorldInfo)) names.push(...context.selectedWorldInfo);
+    const chat = context.chatMetadata && context.chatMetadata.world_info;
+    if (typeof chat === "string" && chat) names.push(chat);
+    if (Array.isArray(chat)) names.push(...chat);
+    return [...new Set(names.map((name) => String(name)).filter(Boolean))];
+}
+
+function worldToV3(name, world) {
+    const entries = Object.values(world.entries || {}).map((entry) => ({
+        keys: entry.key || entry.keys || [],
+        secondary_keys: entry.keysecondary || entry.secondary_keys || [],
+        content: entry.content || "",
+        comment: entry.comment || "",
+        enabled: entry.disable !== true,
+        constant: Boolean(entry.constant),
+        selective: Boolean(entry.selective),
+        insertion_order: entry.insertion_order ?? entry.order ?? 100,
+        position: entry.position === 1 || entry.position === "after_char" ? "after_char" : "before_char",
+    }));
+    return {
+        spec: "lorebook_v3",
+        data: {
+            name,
+            description: world.description || "",
+            scan_depth: world.scan_depth ?? 2,
+            token_budget: world.token_budget ?? 512,
+            recursive_scanning: Boolean(world.recursive_scanning),
+            entries,
+        },
+    };
+}
+
+async function exportWorlds(root, format) {
+    try {
+        const names = activeWorldNames();
+        if (!names.length) throw new Error("Turn on a lorebook in World Info first.");
+        const lines = [];
+        for (const name of names) {
+            const res = await fetch("/api/worldinfo/get", {
+                method: "POST",
+                headers: ctx().getRequestHeaders(),
+                body: JSON.stringify({ name }),
+            });
+            if (!res.ok) throw new Error(`Could not read lorebook “${name}”.`);
+            const world = await res.json();
+            const payload = format === "v3" ? worldToV3(name, world) : { name, description: world.description || "", ...world };
+            const suffix = format === "v3" ? ".lorebook.json" : ".json";
+            downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `${safeFileName(name)}${suffix}`);
+            lines.push(format === "v3" ? `Lorebook v3 “${name}”` : `World JSON “${name}”`);
+        }
+        state.log = lines.join("\n");
+    } catch (error) {
+        state.log = error.message;
+    }
+    render(root);
 }
 
 async function mount() {

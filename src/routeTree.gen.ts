@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiV1AdaptRouteImport } from './routes/api/v1/adapt'
 import { Route as ApiV1CatalogRouteImport } from './routes/api/v1/catalog'
 import { Route as ApiV1HealthRouteImport } from './routes/api/v1/health'
+import { Route as ApiV1LinkRouteImport } from './routes/api/v1/link'
 import { Route as ApiV1PluginRouteImport } from './routes/api/v1/plugin'
 import { Route as ApiV1ItemsIdRouteImport } from './routes/api/v1/items/$id'
 
@@ -36,6 +37,11 @@ const ApiV1HealthRoute = ApiV1HealthRouteImport.update({
   path: '/api/v1/health',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiV1LinkRoute = ApiV1LinkRouteImport.update({
+  id: '/api/v1/link',
+  path: '/api/v1/link',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiV1PluginRoute = ApiV1PluginRouteImport.update({
   id: '/api/v1/plugin',
   path: '/api/v1/plugin',
@@ -52,6 +58,7 @@ export interface FileRoutesByFullPath {
   '/api/v1/adapt': typeof ApiV1AdaptRoute
   '/api/v1/catalog': typeof ApiV1CatalogRoute
   '/api/v1/health': typeof ApiV1HealthRoute
+  '/api/v1/link': typeof ApiV1LinkRoute
   '/api/v1/plugin': typeof ApiV1PluginRoute
   '/api/v1/items/$id': typeof ApiV1ItemsIdRoute
 }
@@ -60,6 +67,7 @@ export interface FileRoutesByTo {
   '/api/v1/adapt': typeof ApiV1AdaptRoute
   '/api/v1/catalog': typeof ApiV1CatalogRoute
   '/api/v1/health': typeof ApiV1HealthRoute
+  '/api/v1/link': typeof ApiV1LinkRoute
   '/api/v1/plugin': typeof ApiV1PluginRoute
   '/api/v1/items/$id': typeof ApiV1ItemsIdRoute
 }
@@ -69,6 +77,7 @@ export interface FileRoutesById {
   '/api/v1/adapt': typeof ApiV1AdaptRoute
   '/api/v1/catalog': typeof ApiV1CatalogRoute
   '/api/v1/health': typeof ApiV1HealthRoute
+  '/api/v1/link': typeof ApiV1LinkRoute
   '/api/v1/plugin': typeof ApiV1PluginRoute
   '/api/v1/items/$id': typeof ApiV1ItemsIdRoute
 }
@@ -79,6 +88,7 @@ export interface FileRouteTypes {
     | '/api/v1/adapt'
     | '/api/v1/catalog'
     | '/api/v1/health'
+    | '/api/v1/link'
     | '/api/v1/plugin'
     | '/api/v1/items/$id'
   fileRoutesByTo: FileRoutesByTo
@@ -87,6 +97,7 @@ export interface FileRouteTypes {
     | '/api/v1/adapt'
     | '/api/v1/catalog'
     | '/api/v1/health'
+    | '/api/v1/link'
     | '/api/v1/plugin'
     | '/api/v1/items/$id'
   id:
@@ -95,6 +106,7 @@ export interface FileRouteTypes {
     | '/api/v1/adapt'
     | '/api/v1/catalog'
     | '/api/v1/health'
+    | '/api/v1/link'
     | '/api/v1/plugin'
     | '/api/v1/items/$id'
   fileRoutesById: FileRoutesById
@@ -104,6 +116,7 @@ export interface RootRouteChildren {
   ApiV1AdaptRoute: typeof ApiV1AdaptRoute
   ApiV1CatalogRoute: typeof ApiV1CatalogRoute
   ApiV1HealthRoute: typeof ApiV1HealthRoute
+  ApiV1LinkRoute: typeof ApiV1LinkRoute
   ApiV1PluginRoute: typeof ApiV1PluginRoute
   ApiV1ItemsIdRoute: typeof ApiV1ItemsIdRoute
 }
@@ -138,6 +151,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiV1HealthRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/v1/link': {
+      id: '/api/v1/link'
+      path: '/api/v1/link'
+      fullPath: '/api/v1/link'
+      preLoaderRoute: typeof ApiV1LinkRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/v1/plugin': {
       id: '/api/v1/plugin'
       path: '/api/v1/plugin'
@@ -160,6 +180,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiV1AdaptRoute: ApiV1AdaptRoute,
   ApiV1CatalogRoute: ApiV1CatalogRoute,
   ApiV1HealthRoute: ApiV1HealthRoute,
+  ApiV1LinkRoute: ApiV1LinkRoute,
   ApiV1PluginRoute: ApiV1PluginRoute,
   ApiV1ItemsIdRoute: ApiV1ItemsIdRoute,
 }

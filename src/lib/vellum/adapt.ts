@@ -200,6 +200,7 @@ function bookItem(raw: unknown, source: ItemSource, fallbackName: string): Vault
 }
 
 function personaItem(raw: Record<string, unknown>, source: ItemSource): VaultItem {
+  const tags = asStringList(raw.tags);
   const persona: PersonaData = {
     name: asString(raw.name, "Persona"),
     title: asString(raw.title || raw.name),
@@ -207,11 +208,30 @@ function personaItem(raw: Record<string, unknown>, source: ItemSource): VaultIte
     lorebookName: asString(raw.lorebookName || raw.lorebook),
   };
   const book = normalizeBook(raw.book ?? raw.lorebook_data ?? raw.character_book, persona.lorebookName);
+  const nsfw = Boolean(raw.nsfw) || tags.some((tag) => /^(nsfw|nsfl|mature)$/i.test(tag));
   return {
-    ...itemBase("persona", persona.name, source === "vault" ? "persona" : source, asStringList(raw.tags), blurbFrom(persona.description), asString(raw.creator), false),
+    ...itemBase("persona", persona.name, source === "vault" ? "persona" : source, tags, blurbFrom(persona.description), asString(raw.creator), nsfw),
     persona,
     book: book && book.entries.length ? book : undefined,
   };
+}
+
+function personaFromTavern(raw: Record<string, unknown>): VaultItem | null {
+  const data = asRecord(raw.data) ?? raw;
+  const extensions = asRecord(data.extensions);
+  const marker = extensions ? asRecord(extensions.vellum_persona) : null;
+  if (!marker) return null;
+  return personaItem(
+    {
+      name: data.name,
+      description: data.description,
+      title: marker.title || data.name,
+      lorebookName: marker.lorebook || marker.lorebookName,
+      tags: data.tags,
+      creator: data.creator,
+    },
+    "persona",
+  );
 }
 
 export function adaptPayload(input: unknown, source: ItemSource = "bundle"): VaultItem[] {
@@ -228,6 +248,14 @@ export function adaptPayload(input: unknown, source: ItemSource = "bundle"): Vau
     const persona = asRecord(raw.persona) ?? raw;
     return [personaItem(persona, source)];
   }
+
+  if (asString(raw.spec) === "lorebook_v3" && raw.data) {
+    const item = bookItem(raw.data, source, asString(asRecord(raw.data)?.name, "Lorebook"));
+    return item ? [item] : [];
+  }
+
+  const marked = personaFromTavern(raw);
+  if (marked) return [marked];
 
   if (isBundle(raw)) {
     const cards = Array.isArray(raw.cards) ? raw.cards.flatMap((entry) => adaptPayload(entry, "bundle")) : [];

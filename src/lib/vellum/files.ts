@@ -1,6 +1,6 @@
 import { extractCharacterJson, injectTextChunk, utf8ToBase64 } from "./png";
-import { toSillyTavern, toV2Card, safeFileName } from "./st";
-import type { VaultItem } from "./types";
+import { safeFileName, toLorebookV3, toSillyTavern, toV2Card } from "./st";
+import type { Lorebook, VaultItem } from "./types";
 import { textFile, zipStore, asArrayBuffer } from "./zip";
 
 function hashName(name: string): number {
@@ -54,23 +54,33 @@ export function saveBlob(blob: Blob, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export async function downloadItem(item: VaultItem) {
+export async function downloadItem(item: VaultItem, format?: "png" | "json" | "v3") {
   const st = toSillyTavern(item);
-  if (item.kind === "card" && st.card) {
+  const chosen = format ?? (item.kind === "lorebook" ? "json" : "png");
+  if (chosen === "png") {
+    if (!st.card) throw new Error("A lorebook exports as JSON, not a PNG.");
     saveBlob(await cardPng(item.name, st.card), `${safeFileName(item.name)}.png`);
     return;
   }
-  if (st.world) {
-    saveBlob(
-      new Blob([JSON.stringify(st.world, null, 2)], { type: "application/json" }),
-      `${safeFileName(st.worldName || item.name)}.json`,
-    );
+  if (item.kind === "lorebook" && item.book) {
+    const payload = chosen === "v3" ? toLorebookV3(item.book) : worldFile(item.book, st.world);
+    const suffix = chosen === "v3" ? ".lorebook.json" : ".json";
+    saveBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `${safeFileName(item.name)}${suffix}`);
     return;
   }
-  saveBlob(
-    new Blob([JSON.stringify(st.persona, null, 2)], { type: "application/json" }),
-    `${safeFileName(item.name)}.persona.json`,
-  );
+  if (!st.card) throw new Error("Nothing to export.");
+  saveBlob(new Blob([JSON.stringify(st.card, null, 2)], { type: "application/json" }), `${safeFileName(item.name)}.json`);
+}
+
+function worldFile(book: Lorebook, world: { entries: Record<string, Record<string, unknown>> } | null) {
+  return {
+    name: book.name,
+    description: book.description,
+    scan_depth: book.scan_depth,
+    token_budget: book.token_budget,
+    recursive_scanning: book.recursive_scanning,
+    entries: world?.entries ?? {},
+  };
 }
 
 const PACK_README = `Vellum Bridge pack
@@ -80,7 +90,7 @@ bundle.json is the one file the Vellum Bridge plugin imports. It writes cards, l
 If you are not using the plugin:
 - sillytavern/characters/*.png  → Characters → Import
 - sillytavern/worlds/*.json     → World Info → Import
-Personas have no file import in SillyTavern. Use the plugin for those.
+Personas are a tavern PNG. The description field is the persona. SillyTavern can import that PNG as a character. The plugin imports it as a persona.
 `;
 
 export async function downloadPack(items: VaultItem[]) {
@@ -100,11 +110,10 @@ export async function downloadPack(items: VaultItem[]) {
       files.push({ name: `sillytavern/characters/${safeFileName(item.name)}.png`, data: png });
     }
     if (item.kind === "lorebook" && item.book) bundle.lorebooks.push(item.book);
-    if (item.kind === "persona" && item.persona) {
+    if (item.kind === "persona" && item.persona && st.card) {
       bundle.personas.push(item.persona);
-      files.push(
-        textFile(`sillytavern/personas/${safeFileName(item.name)}.json`, JSON.stringify(item.persona, null, 2)),
-      );
+      const png = new Uint8Array(await (await cardPng(item.name, st.card)).arrayBuffer());
+      files.push({ name: `sillytavern/personas/${safeFileName(item.name)}.png`, data: png });
     }
     if (st.world && st.worldName && item.kind !== "persona") {
       files.push(textFile(`sillytavern/worlds/${safeFileName(st.worldName)}.json`, JSON.stringify(st.world, null, 2)));

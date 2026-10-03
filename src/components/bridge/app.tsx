@@ -99,13 +99,13 @@ export function BridgeApp() {
     if (problems.length) setNotice(problems.join(" "));
   }
 
-  async function runDownload(items: VaultItem[], packFile: boolean) {
+  async function runDownload(items: VaultItem[], packFile: boolean, format?: "png" | "json" | "v3") {
     if (!items.length || busy) return;
     setBusy(true);
     setNotice("");
     try {
       if (packFile) await downloadPack(items);
-      else await downloadItem(items[0]);
+      else await downloadItem(items[0], format);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Download failed");
     } finally {
@@ -158,7 +158,7 @@ export function BridgeApp() {
               busy={busy}
               onBack={() => setSelectedId(null)}
               onPack={() => togglePack(selected.id)}
-              onDownload={() => void runDownload([selected], false)}
+              onDownload={(format) => void runDownload([selected], false, format)}
             />
           ) : (
             <ListView
@@ -181,7 +181,18 @@ export function BridgeApp() {
           )
         ) : null}
 
-        {tab === "adapters" ? <Adapters onNotice={setNotice} /> : null}
+        {tab === "adapters" ? (
+          <Adapters
+            onNotice={setNotice}
+            onFiles={(files) => void takeFiles(files)}
+            onKeep={(items) => {
+              setMine((current) => [...items, ...current]);
+              setNotice(`${items.length} added to your shelf.`);
+              setTab("mine");
+              setSelectedId(items[0]?.id ?? null);
+            }}
+          />
+        ) : null}
         {tab === "plugin" ? <PluginPanel /> : null}
 
         {notice ? (
@@ -373,7 +384,7 @@ function Detail({
   busy: boolean;
   onBack: () => void;
   onPack: () => void;
-  onDownload: () => void;
+  onDownload: (format: "png" | "json" | "v3") => void;
 }) {
   const lore =
     item.kind === "lorebook" ? item.book : item.kind === "card" ? item.card?.character_book : item.book;
@@ -394,17 +405,34 @@ function Detail({
       ) : null}
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <button type="button" className={solid} disabled={busy} onClick={onDownload}>
-          <Download className="size-4" aria-hidden="true" />
-          {item.kind === "card" ? "Card PNG" : item.kind === "lorebook" ? "World JSON" : "Persona JSON"}
-        </button>
+        {item.kind === "lorebook" ? (
+          <>
+            <button type="button" className={solid} disabled={busy} onClick={() => onDownload("json")}>
+              <Download className="size-4" aria-hidden="true" />
+              World JSON
+            </button>
+            <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("v3")}>
+              Lorebook v3
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className={solid} disabled={busy} onClick={() => onDownload("png")}>
+              <Download className="size-4" aria-hidden="true" />
+              Tavern PNG
+            </button>
+            <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("json")}>
+              Card JSON
+            </button>
+          </>
+        )}
         <button type="button" className={ghost} onClick={onPack}>
           {packed ? "Remove from pack" : "Add to pack"}
         </button>
       </div>
       {item.kind === "persona" ? (
         <p className="mt-3 text-sm leading-normal text-muted">
-          SillyTavern cannot import a persona from a file. Put this in a pack and import the bundle with the plugin.
+          The PNG is a character card. Its description is the persona description, so SillyTavern can import it as a card and the plugin can import it as a persona.
         </p>
       ) : null}
 
@@ -452,10 +480,20 @@ function Field({ label, text }: { label: string; text: string }) {
   );
 }
 
-function Adapters({ onNotice }: { onNotice: (message: string) => void }) {
+function Adapters({
+  onNotice,
+  onFiles,
+  onKeep,
+}: {
+  onNotice: (message: string) => void;
+  onFiles: (files: File[]) => void;
+  onKeep: (items: VaultItem[]) => void;
+}) {
   const [raw, setRaw] = useState(JSON.stringify(SAMPLE_ARCHIVES, null, 2));
   const [found, setFound] = useState<VaultItem[] | null>(null);
   const [origin, setOrigin] = useState("");
+  const [link, setLink] = useState("https://vellum.thecentralempire.com/c/snow-e1716794");
+  const [pulling, setPulling] = useState(false);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -469,6 +507,27 @@ function Adapters({ onNotice }: { onNotice: (message: string) => void }) {
     } catch {
       setFound([]);
       onNotice("That is not valid JSON.");
+    }
+  }
+
+  async function pullLink() {
+    setPulling(true);
+    onNotice("");
+    try {
+      const res = await fetch("/api/v1/link", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: link }),
+      });
+      const body = (await res.json()) as { items?: VaultItem[]; error?: string };
+      if (!res.ok || !body.items?.length) throw new Error(body.error || "That link had nothing to import.");
+      setFound(body.items);
+      onKeep(body.items);
+    } catch (error) {
+      setFound([]);
+      onNotice(error instanceof Error ? error.message : "Could not read that link.");
+    } finally {
+      setPulling(false);
     }
   }
 
@@ -494,6 +553,41 @@ function Adapters({ onNotice }: { onNotice: (message: string) => void }) {
         name="Editor"
         text="Character card V2 or V3 JSON, a PNG with a chara or ccv3 chunk, SillyTavern world info, and a persona sheet with a name and description."
       />
+
+      <div className="rounded-xl bg-surface p-4">
+        <h3 className="text-sm font-medium text-fg">Import</h3>
+        <p className="mt-1 text-sm leading-normal text-muted">
+          Two ways in. A link such as /c/, /l/, or /p/ on Vellum, or a file: tavern PNG, world JSON, or lorebook v3.
+        </p>
+        <label className="mt-3 block text-sm text-fg">
+          Link
+          <input
+            value={link}
+            onChange={(event) => setLink(event.target.value)}
+            spellCheck={false}
+            className="mt-1 min-h-11 w-full rounded-md border border-line bg-bg px-3 font-mono text-xs text-fg outline-none"
+            aria-label="Vellum link"
+          />
+        </label>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className={solid} disabled={pulling} onClick={() => void pullLink()}>
+            {pulling ? "Reading…" : "Import link"}
+          </button>
+          <label className={`${ghost} cursor-pointer`}>
+            Import file
+            <input
+              className="sr-only"
+              type="file"
+              accept="application/json,.json,image/png,.png"
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = "";
+                if (files.length) onFiles(files);
+              }}
+            />
+          </label>
+        </div>
+      </div>
 
       <div className="rounded-xl bg-surface p-4">
         <h3 className="text-sm font-medium text-fg">Try a payload</h3>
@@ -607,8 +701,7 @@ function PluginPanel() {
           and, if you have one, your own Vellum or Archives address.
         </li>
         <li>
-          <span className="font-medium text-fg">4. Or skip the address.</span> Download a pack from this shelf and use
-          Import bundle inside the plugin. One file writes cards, worlds, and personas.
+          <span className="font-medium text-fg">4. Import and export inside the plugin.</span> Paste a /c/, /l/, or /p/ link, or a PNG or JSON file. Export the open character, lorebook, or persona as a tavern PNG or as JSON. A persona PNG keeps its text in the description field, so it is still a character card.
         </li>
       </ol>
 
