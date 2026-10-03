@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Vellum Bridge",
+      "hasCanvas": false,
+      "bodyTextLen": 1217,
+      "bodyTextHash": "8af069b80ee7de5b61f0a2f8b1cdd0bc4376ac394328942bfb5ae325dae5830a",
+      "bodyTextPrefix": "VELLUM Bridge Cards, lorebooks, and personas from your Vellum an",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Vellum Bridge",
+      "hasCanvas": false,
+      "bodyTextLen": 1217,
+      "bodyTextHash": "8af069b80ee7de5b61f0a2f8b1cdd0bc4376ac394328942bfb5ae325dae5830a",
+      "bodyTextPrefix": "VELLUM Bridge Cards, lorebooks, and personas from your Vellum an",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
