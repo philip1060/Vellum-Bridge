@@ -31,6 +31,80 @@ function kindLabel(kind: Kind) {
   return "Card";
 }
 
+function kindNoun(kind: Kind) {
+  if (kind === "card") return "character";
+  if (kind === "lorebook") return "lorebook";
+  return "persona";
+}
+
+function asExpected(items: VaultItem[], expect?: Kind): VaultItem[] {
+  if (!expect) return items;
+  if (expect !== "persona") return items.filter((item) => item.kind === expect);
+  return items.flatMap((item) => {
+    if (item.kind === "persona") return [item];
+    if (item.kind === "card" && item.card) {
+      return adaptPayload({
+        kind: "persona",
+        name: item.card.name,
+        description: item.card.description,
+        title: item.card.name,
+        tags: item.tags,
+        creator: item.creator,
+      });
+    }
+    return [];
+  });
+}
+
+function KindImport({
+  title,
+  placeholder,
+  accept,
+  busy,
+  onLink,
+  onFile,
+}: {
+  title: string;
+  placeholder: string;
+  accept: string;
+  busy: boolean;
+  onLink: (url: string) => void;
+  onFile: (files: File[]) => void;
+}) {
+  const [value, setValue] = useState("");
+  return (
+    <section className="rounded-xl bg-surface p-3">
+      <h3 className="text-sm font-medium text-fg">{title}</h3>
+      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+        <input
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder={placeholder}
+          spellCheck={false}
+          aria-label={`${title} link`}
+          className="min-h-11 min-w-0 rounded-md border border-line bg-bg px-3 font-mono text-xs text-fg outline-none"
+        />
+        <button type="button" className={solid} disabled={busy || !value.trim()} onClick={() => onLink(value.trim())}>
+          Import link
+        </button>
+      </div>
+      <label className={`${ghost} mt-2 cursor-pointer`}>
+        Import file
+        <input
+          className="sr-only"
+          type="file"
+          accept={accept}
+          onChange={(event) => {
+            const files = [...(event.target.files ?? [])];
+            event.target.value = "";
+            if (files.length) onFile(files);
+          }}
+        />
+      </label>
+    </section>
+  );
+}
+
 function monogram(name: string) {
   const parts = name.split(/\s+/).filter(Boolean);
   return (parts.length > 1 ? `${parts[0][0]}${parts[1][0]}` : name.slice(0, 1)).toUpperCase();
@@ -77,14 +151,14 @@ export function BridgeApp() {
     setPack((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   }
 
-  async function takeFiles(files: File[]) {
+  async function takeFiles(files: File[], expect?: Kind) {
     const next: VaultItem[] = [];
     const problems: string[] = [];
     for (const file of files) {
       try {
         const payload = await readDroppedFile(file);
-        const items = adaptPayload(payload, file.name.endsWith(".png") ? "editor" : "bundle");
-        if (!items.length) problems.push(`${file.name} did not match a known format`);
+        const items = asExpected(adaptPayload(payload, file.name.endsWith(".png") ? "editor" : "bundle"), expect);
+        if (!items.length) problems.push(expect ? `${file.name} is not a ${kindNoun(expect)}` : `${file.name} did not match a known format`);
         next.push(...items);
       } catch (error) {
         problems.push(error instanceof Error ? error.message : `${file.name} failed`);
@@ -97,6 +171,32 @@ export function BridgeApp() {
       setSelectedId(next[0]?.id ?? null);
     }
     if (problems.length) setNotice(problems.join(" "));
+  }
+
+  async function importUrl(url: string, expect?: Kind) {
+    if (busy) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const res = await fetch("/api/v1/link", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const body = (await res.json()) as { items?: VaultItem[]; error?: string };
+      const items = asExpected(body.items ?? [], expect);
+      if (!res.ok || !items.length) {
+        throw new Error(body.error || (expect ? `That link is not a ${kindNoun(expect)}.` : "That link had nothing to import."));
+      }
+      setMine((current) => [...items, ...current]);
+      setNotice(`${items.length} added to your shelf.`);
+      setTab("mine");
+      setSelectedId(items[0]?.id ?? null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not read that link.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function runDownload(items: VaultItem[], packFile: boolean, format?: "png" | "json" | "v3") {
@@ -173,6 +273,8 @@ export function BridgeApp() {
               onMature={setMature}
               onOpen={setSelectedId}
               onFiles={(files) => void takeFiles(files)}
+              onImportUrl={(url, expect) => void importUrl(url, expect)}
+              busy={busy}
               onClear={() => {
                 setMine([]);
                 setPack((current) => current.filter((id) => VAULT.some((item) => item.id === id)));
@@ -182,16 +284,7 @@ export function BridgeApp() {
         ) : null}
 
         {tab === "adapters" ? (
-          <Adapters
-            onNotice={setNotice}
-            onFiles={(files) => void takeFiles(files)}
-            onKeep={(items) => {
-              setMine((current) => [...items, ...current]);
-              setNotice(`${items.length} added to your shelf.`);
-              setTab("mine");
-              setSelectedId(items[0]?.id ?? null);
-            }}
-          />
+          <Adapters onNotice={setNotice} busy={busy} onImportUrl={(url, expect) => void importUrl(url, expect)} onFiles={(files, expect) => void takeFiles(files, expect)} />
         ) : null}
         {tab === "plugin" ? <PluginPanel /> : null}
 
@@ -239,6 +332,8 @@ function ListView({
   onMature,
   onOpen,
   onFiles,
+  onImportUrl,
+  busy,
   onClear,
 }: {
   tab: "shelf" | "mine";
@@ -251,7 +346,9 @@ function ListView({
   onKind: (value: KindFilter) => void;
   onMature: (value: boolean) => void;
   onOpen: (id: string) => void;
-  onFiles: (files: File[]) => void;
+  onFiles: (files: File[], expect?: Kind) => void;
+  onImportUrl: (url: string, expect?: Kind) => void;
+  busy: boolean;
   onClear: () => void;
 }) {
   return (
@@ -269,28 +366,54 @@ function ListView({
       </p>
 
       {tab === "mine" ? (
-        <label
-          className="mt-4 flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-line bg-surface px-4 py-5 text-center"
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => {
-            event.preventDefault();
-            onFiles([...event.dataTransfer.files]);
-          }}
-        >
-          <span className="text-sm font-medium text-fg">Drop cards, lorebooks, or a bundle</span>
-          <span className="mt-1 text-sm text-muted">PNG, JSON, world info, or a Vellum bundle</span>
-          <input
-            className="sr-only"
-            type="file"
+        <div className="mt-4 space-y-3">
+          <KindImport
+            title="Characters"
+            placeholder="https://vellum.thecentralempire.com/c/…"
             accept="application/json,.json,image/png,.png"
-            multiple
-            onChange={(event) => {
-              const files = [...(event.target.files ?? [])];
-              event.target.value = "";
-              if (files.length) onFiles(files);
-            }}
+            busy={busy}
+            onLink={(url) => onImportUrl(url, "card")}
+            onFile={(files) => onFiles(files, "card")}
           />
-        </label>
+          <KindImport
+            title="Lorebooks"
+            placeholder="https://vellum.thecentralempire.com/l/…"
+            accept="application/json,.json"
+            busy={busy}
+            onLink={(url) => onImportUrl(url, "lorebook")}
+            onFile={(files) => onFiles(files, "lorebook")}
+          />
+          <KindImport
+            title="Personas"
+            placeholder="https://vellum.thecentralempire.com/p/…"
+            accept="application/json,.json,image/png,.png"
+            busy={busy}
+            onLink={(url) => onImportUrl(url, "persona")}
+            onFile={(files) => onFiles(files, "persona")}
+          />
+          <label
+            className="flex min-h-20 cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-line bg-surface px-4 py-4 text-center"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              onFiles([...event.dataTransfer.files]);
+            }}
+          >
+            <span className="text-sm font-medium text-fg">Or drop a bundle</span>
+            <span className="mt-1 text-sm text-muted">Mixed PNG, JSON, or a Vellum pack</span>
+            <input
+              className="sr-only"
+              type="file"
+              accept="application/json,.json,image/png,.png"
+              multiple
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = "";
+                if (files.length) onFiles(files);
+              }}
+            />
+          </label>
+        </div>
       ) : null}
 
       <label className="mt-4 flex items-center gap-2 rounded-md border border-line bg-surface px-3">
@@ -404,29 +527,32 @@ function Detail({
         <p className="mt-3 text-sm text-subtle">{item.tags.join(" · ")}</p>
       ) : null}
 
-      <div className="mt-5 flex flex-wrap gap-2">
-        {item.kind === "lorebook" ? (
-          <>
-            <button type="button" className={solid} disabled={busy} onClick={() => onDownload("json")}>
-              <Download className="size-4" aria-hidden="true" />
-              World JSON
-            </button>
-            <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("v3")}>
-              Lorebook v3
-            </button>
-          </>
-        ) : (
-          <>
-            <button type="button" className={solid} disabled={busy} onClick={() => onDownload("png")}>
-              <Download className="size-4" aria-hidden="true" />
-              Tavern PNG
-            </button>
-            <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("json")}>
-              Card JSON
-            </button>
-          </>
-        )}
-        <button type="button" className={ghost} onClick={onPack}>
+      <div className="mt-5">
+        <p className="text-xs tracking-widest text-subtle uppercase">Export</p>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          {item.kind === "lorebook" ? (
+            <>
+              <button type="button" className={solid} disabled={busy} onClick={() => onDownload("json")}>
+                <Download className="size-4" aria-hidden="true" />
+                World JSON
+              </button>
+              <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("v3")}>
+                Lorebook v3
+              </button>
+            </>
+          ) : (
+            <>
+              <button type="button" className={solid} disabled={busy} onClick={() => onDownload("png")}>
+                <Download className="size-4" aria-hidden="true" />
+                Tavern PNG
+              </button>
+              <button type="button" className={ghost} disabled={busy} onClick={() => onDownload("json")}>
+                Card JSON
+              </button>
+            </>
+          )}
+        </div>
+        <button type="button" className={`${ghost} mt-2`} onClick={onPack}>
           {packed ? "Remove from pack" : "Add to pack"}
         </button>
       </div>
@@ -483,17 +609,17 @@ function Field({ label, text }: { label: string; text: string }) {
 function Adapters({
   onNotice,
   onFiles,
-  onKeep,
+  onImportUrl,
+  busy,
 }: {
   onNotice: (message: string) => void;
-  onFiles: (files: File[]) => void;
-  onKeep: (items: VaultItem[]) => void;
+  onFiles: (files: File[], expect?: Kind) => void;
+  onImportUrl: (url: string, expect?: Kind) => void;
+  busy: boolean;
 }) {
   const [raw, setRaw] = useState(JSON.stringify(SAMPLE_ARCHIVES, null, 2));
   const [found, setFound] = useState<VaultItem[] | null>(null);
   const [origin, setOrigin] = useState("");
-  const [link, setLink] = useState("https://vellum.thecentralempire.com/c/snow-e1716794");
-  const [pulling, setPulling] = useState(false);
 
   useEffect(() => {
     setOrigin(window.location.origin);
@@ -507,27 +633,6 @@ function Adapters({
     } catch {
       setFound([]);
       onNotice("That is not valid JSON.");
-    }
-  }
-
-  async function pullLink() {
-    setPulling(true);
-    onNotice("");
-    try {
-      const res = await fetch("/api/v1/link", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ url: link }),
-      });
-      const body = (await res.json()) as { items?: VaultItem[]; error?: string };
-      if (!res.ok || !body.items?.length) throw new Error(body.error || "That link had nothing to import.");
-      setFound(body.items);
-      onKeep(body.items);
-    } catch (error) {
-      setFound([]);
-      onNotice(error instanceof Error ? error.message : "Could not read that link.");
-    } finally {
-      setPulling(false);
     }
   }
 
@@ -554,39 +659,31 @@ function Adapters({
         text="Character card V2 or V3 JSON, a PNG with a chara or ccv3 chunk, SillyTavern world info, and a persona sheet with a name and description."
       />
 
-      <div className="rounded-xl bg-surface p-4">
-        <h3 className="text-sm font-medium text-fg">Import</h3>
-        <p className="mt-1 text-sm leading-normal text-muted">
-          Two ways in. A link such as /c/, /l/, or /p/ on Vellum, or a file: tavern PNG, world JSON, or lorebook v3.
-        </p>
-        <label className="mt-3 block text-sm text-fg">
-          Link
-          <input
-            value={link}
-            onChange={(event) => setLink(event.target.value)}
-            spellCheck={false}
-            className="mt-1 min-h-11 w-full rounded-md border border-line bg-bg px-3 font-mono text-xs text-fg outline-none"
-            aria-label="Vellum link"
-          />
-        </label>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <button type="button" className={solid} disabled={pulling} onClick={() => void pullLink()}>
-            {pulling ? "Reading…" : "Import link"}
-          </button>
-          <label className={`${ghost} cursor-pointer`}>
-            Import file
-            <input
-              className="sr-only"
-              type="file"
-              accept="application/json,.json,image/png,.png"
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])];
-                event.target.value = "";
-                if (files.length) onFiles(files);
-              }}
-            />
-          </label>
-        </div>
+      <div className="space-y-3">
+        <KindImport
+          title="Characters"
+          placeholder="https://vellum.thecentralempire.com/c/…"
+          accept="application/json,.json,image/png,.png"
+          busy={busy}
+          onLink={(url) => onImportUrl(url, "card")}
+          onFile={(files) => onFiles(files, "card")}
+        />
+        <KindImport
+          title="Lorebooks"
+          placeholder="https://vellum.thecentralempire.com/l/…"
+          accept="application/json,.json"
+          busy={busy}
+          onLink={(url) => onImportUrl(url, "lorebook")}
+          onFile={(files) => onFiles(files, "lorebook")}
+        />
+        <KindImport
+          title="Personas"
+          placeholder="https://vellum.thecentralempire.com/p/…"
+          accept="application/json,.json,image/png,.png"
+          busy={busy}
+          onLink={(url) => onImportUrl(url, "persona")}
+          onFile={(files) => onFiles(files, "persona")}
+        />
       </div>
 
       <div className="rounded-xl bg-surface p-4">

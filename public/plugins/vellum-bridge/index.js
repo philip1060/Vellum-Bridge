@@ -597,8 +597,8 @@ async function importOne(item, saveEmbedded) {
     return `Card “${st.name}”`;
 }
 
-const state = { items: [], log: "" };
-let pendingFileMode = "auto";
+const state = { items: [], log: "", links: { card: "", lorebook: "", persona: "" } };
+let pendingFileKind = "card";
 
 function el(tag, attrs, children) {
     const node = document.createElement(tag);
@@ -609,6 +609,52 @@ function el(tag, attrs, children) {
     }
     for (const child of children || []) node.append(child);
     return node;
+}
+
+function note(message) {
+    state.log = message;
+    for (const node of document.querySelectorAll(".vb-log")) node.textContent = message;
+}
+
+const KIND_META = {
+    card: { title: "Characters", hint: "https://vellum.thecentralempire.com/c/…", exports: [["png", "PNG"], ["json", "JSON"]] },
+    lorebook: { title: "Lorebooks", hint: "https://vellum.thecentralempire.com/l/…", exports: [["json", "JSON"], ["v3", "v3"]] },
+    persona: { title: "Personas", hint: "https://vellum.thecentralempire.com/p/…", exports: [["png", "PNG"], ["json", "JSON"]] },
+};
+
+function kindBlock(kind) {
+    const meta = KIND_META[kind];
+    const link = el("input", { type: "url", placeholder: meta.hint, value: state.links[kind] || "" });
+    link.addEventListener("input", () => {
+        state.links[kind] = link.value;
+    });
+    return el("section", { class: "vb-kind-block" }, [
+        el("h4", {}, [meta.title]),
+        el("div", { class: "vb-row" }, [
+            link,
+            el("button", { type: "button", class: "menu_button", onclick: () => importLink(link.value, kind) }, ["Import link"]),
+        ]),
+        el("div", { class: "vb-split" }, [
+            el("div", {}, [
+                el("span", { class: "vb-kicker" }, ["Import"]),
+                el("div", { class: "vb-actions" }, [
+                    el("button", { type: "button", class: "menu_button", onclick: () => pickFile(kind) }, ["File"]),
+                ]),
+            ]),
+            el("div", {}, [
+                el("span", { class: "vb-kicker" }, ["Export"]),
+                el("div", { class: "vb-actions" }, meta.exports.map(([format, label]) =>
+                    el("button", { type: "button", class: "menu_button", onclick: () => exportKind(kind, format) }, [label]),
+                )),
+            ]),
+        ]),
+    ]);
+}
+
+function pickFile(kind) {
+    pendingFileKind = kind;
+    const input = document.getElementById("vb-file");
+    if (input) input.click();
 }
 
 function render(root) {
@@ -632,7 +678,7 @@ function render(root) {
     token.addEventListener("change", remember);
     saveEmbedded.addEventListener("change", remember);
 
-    const log = el("pre", { class: "vb-log" }, [state.log || "Paste a vault address, or import a bundle file."]);
+    const log = el("pre", { class: "vb-log" }, [state.log || "Import and export sit with each kind. Refresh loads the vault list."]);
     const list = el("div", { class: "vb-list" });
     for (const item of state.items) {
         const box = el("input", { type: "checkbox", "data-id": item.id });
@@ -652,12 +698,7 @@ function render(root) {
 
     const file = el("input", { type: "file", accept: "application/json,.json,image/png,.png", id: "vb-file" });
     file.addEventListener("change", () => {
-        void ingestFile(file, root, pendingFileMode);
-    });
-    const link = el("input", {
-        type: "url",
-        id: "vb-link",
-        placeholder: "https://vellum.thecentralempire.com/c/snow-e1716794",
+        void ingestFile(file, pendingFileKind);
     });
 
     root.append(
@@ -665,25 +706,12 @@ function render(root) {
         el("label", {}, ["Your Vellum", personal]),
         el("label", {}, ["Token", token]),
         el("label", { class: "vb-check" }, [saveEmbedded, "Also save a card's lorebook as its own world"]),
+        kindBlock("card"),
+        kindBlock("lorebook"),
+        kindBlock("persona"),
         el("div", { class: "vb-actions" }, [
             el("button", { type: "button", class: "menu_button", onclick: () => refresh(root) }, ["Refresh shelf"]),
             el("button", { type: "button", class: "menu_button", onclick: () => runImport(root) }, ["Import selected"]),
-        ]),
-        el("p", { class: "vb-note" }, ["Import by link, or by file. A persona file uses the tavern description."]),
-        el("label", {}, ["Vellum link", link]),
-        el("div", { class: "vb-actions" }, [
-            el("button", { type: "button", class: "menu_button", onclick: () => importLink(root, link.value) }, ["Import link"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => { pendingFileMode = "auto"; file.click(); } }, ["Import file"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => { pendingFileMode = "persona"; file.click(); } }, ["Import file as persona"]),
-        ]),
-        el("p", { class: "vb-note" }, ["Export what is open. Persona PNG keeps the description in the tavern description field."]),
-        el("div", { class: "vb-actions" }, [
-            el("button", { type: "button", class: "menu_button", onclick: () => exportCharacter(root, "png") }, ["Character PNG"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => exportCharacter(root, "json") }, ["Character JSON"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => exportWorlds(root, "json") }, ["Lorebook JSON"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => exportWorlds(root, "v3") }, ["Lorebook v3"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => exportPersona(root, "png") }, ["Persona PNG"]),
-            el("button", { type: "button", class: "menu_button", onclick: () => exportPersona(root, "json") }, ["Persona JSON"]),
         ]),
         file,
         list,
@@ -733,25 +761,21 @@ async function runImport(root) {
     rememberFrom();
     const chosen = state.items.filter((item) => item._checked !== false);
     if (!chosen.length) {
-        state.log = "Nothing selected.";
-        render(root);
+        note("Nothing selected.");
         return;
     }
     const lines = [];
     for (const item of chosen) {
         try {
             lines.push(await importOne(item, settings().saveEmbeddedWorlds !== false));
-            state.log = lines.join("\n");
-            render(root);
+            note(lines.join("\n"));
         } catch (error) {
             lines.push(`${item.name}: ${error.message}`);
-            state.log = lines.join("\n");
-            render(root);
+            note(lines.join("\n"));
         }
     }
     lines.push("Done.");
-    state.log = lines.join("\n");
-    render(root);
+    note(lines.join("\n"));
     if (typeof toastr !== "undefined") toastr.success("Vellum import finished");
 }
 
@@ -777,13 +801,13 @@ async function readImportFile(file) {
     }
 }
 
-async function ingestFile(input, root, mode) {
+async function ingestFile(input, kind) {
     const picked = input.files && input.files[0];
     input.value = "";
     if (!picked) return;
     try {
         let parsed = await readImportFile(picked);
-        if (mode === "persona") {
+        if (kind === "persona") {
             const data = parsed.data && typeof parsed.data === "object" ? parsed.data : parsed;
             parsed = {
                 kind: "persona",
@@ -793,26 +817,27 @@ async function ingestFile(input, root, mode) {
                 lorebookName: "",
             };
         }
-        const items = adaptPayload(parsed).map((item) => ({ ...item, _remote: false, _label: picked.name, _checked: true }));
-        if (!items.length) throw new Error("That file had no cards, lorebooks, or personas.");
-        state.items = items;
-        state.log = `${items.length} ready from ${picked.name}. Import when you are.`;
+        let items = adaptPayload(parsed);
+        if (kind === "card") items = items.filter((item) => item.kind === "card");
+        if (kind === "lorebook") items = items.filter((item) => item.kind === "lorebook");
+        if (!items.length) throw new Error(kind === "lorebook" ? "That file is not a lorebook." : "That file had nothing to import.");
+        const lines = [];
+        for (const item of items) lines.push(await importOne(item, settings().saveEmbeddedWorlds !== false));
+        lines.push("Done.");
+        note(lines.join("\n"));
     } catch (error) {
-        state.log = error.message;
+        note(error.message);
     }
-    render(root);
 }
 
-async function importLink(root, url) {
+async function importLink(url, kind) {
     rememberFrom();
     const bridge = siteRoot(settings().vaultUrl) || siteRoot(settings().personalUrl);
     if (!bridge) {
-        state.log = "Set the bridge address first. The link itself can be any Vellum page.";
-        render(root);
+        note("Set the bridge address first. The link itself can be any Vellum page.");
         return;
     }
-    state.log = "Reading that link…";
-    render(root);
+    note("Reading that link…");
     try {
         const res = await fetch(`${bridge}/api/v1/link`, {
             method: "POST",
@@ -821,8 +846,8 @@ async function importLink(root, url) {
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.error || "That link did not import.");
-        const items = body.items || [];
-        if (!items.length) throw new Error("That link had nothing to import.");
+        const items = (body.items || []).filter((item) => !kind || item.kind === kind);
+        if (!items.length) throw new Error(kind ? `That link is not a ${KIND_META[kind].title.slice(0, -1).toLowerCase()}.` : "That link had nothing to import.");
         const lines = [];
         for (const item of items) {
             item._portrait = body.portrait || null;
@@ -830,11 +855,16 @@ async function importLink(root, url) {
             lines.push(await importOne(item, settings().saveEmbeddedWorlds !== false));
         }
         lines.push("Done.");
-        state.log = lines.join("\n");
+        note(lines.join("\n"));
     } catch (error) {
-        state.log = error.message;
+        note(error.message);
     }
-    render(root);
+}
+
+function exportKind(kind, format) {
+    if (kind === "lorebook") return exportWorlds(format);
+    if (kind === "persona") return exportPersona(format);
+    return exportCharacter(format);
 }
 
 function currentCharacter() {
@@ -864,12 +894,12 @@ function currentCharacter() {
     return { ch, card: { spec: "chara_card_v3", spec_version: "3.0", data } };
 }
 
-async function exportCharacter(root, format) {
+async function exportCharacter(format) {
     try {
         const { ch, card } = currentCharacter();
         if (format === "json") {
             downloadBlob(new Blob([JSON.stringify(card, null, 2)], { type: "application/json" }), `${safeFileName(card.data.name)}.json`);
-            state.log = `Exported ${card.data.name} as card JSON.`;
+            note(`Exported ${card.data.name} as card JSON.`);
         } else {
             let portrait = null;
             if (ch.avatar) {
@@ -877,12 +907,11 @@ async function exportCharacter(root, format) {
                 if (res.ok) portrait = await res.blob();
             }
             downloadBlob(await cardPng({ name: card.data.name, card }, portrait), `${safeFileName(card.data.name)}.png`);
-            state.log = `Exported ${card.data.name} as a tavern PNG.`;
+            note(`Exported ${card.data.name} as a tavern PNG.`);
         }
     } catch (error) {
-        state.log = error.message;
+        note(error.message);
     }
-    render(root);
 }
 
 function personaState() {
@@ -922,13 +951,13 @@ function personaCard(sheet) {
     };
 }
 
-async function exportPersona(root, format) {
+async function exportPersona(format) {
     try {
         const sheet = personaState();
         const card = personaCard(sheet);
         if (format === "json") {
             downloadBlob(new Blob([JSON.stringify(card, null, 2)], { type: "application/json" }), `${safeFileName(sheet.name)}.json`);
-            state.log = `Exported ${sheet.name} as card JSON. The description is the persona.`;
+            note(`Exported ${sheet.name} as card JSON. The description is the persona.`);
         } else {
             let portrait = null;
             if (sheet.avatar) {
@@ -942,12 +971,11 @@ async function exportPersona(root, format) {
                 }
             }
             downloadBlob(await cardPng({ name: sheet.name, card }, portrait), `${safeFileName(sheet.name)}.png`);
-            state.log = `Exported ${sheet.name} as a tavern PNG. The description is the persona.`;
+            note(`Exported ${sheet.name} as a tavern PNG. The description is the persona.`);
         }
     } catch (error) {
-        state.log = error.message;
+        note(error.message);
     }
-    render(root);
 }
 
 function activeWorldNames() {
@@ -985,7 +1013,7 @@ function worldToV3(name, world) {
     };
 }
 
-async function exportWorlds(root, format) {
+async function exportWorlds(format) {
     try {
         const names = activeWorldNames();
         if (!names.length) throw new Error("Turn on a lorebook in World Info first.");
@@ -1003,38 +1031,58 @@ async function exportWorlds(root, format) {
             downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), `${safeFileName(name)}${suffix}`);
             lines.push(format === "v3" ? `Lorebook v3 “${name}”` : `World JSON “${name}”`);
         }
-        state.log = lines.join("\n");
+        note(lines.join("\n"));
     } catch (error) {
-        state.log = error.message;
+        note(error.message);
     }
-    render(root);
+}
+
+function placeInline() {
+    const spots = [
+        ["card", ["#rm_ch_create_block"]],
+        ["lorebook", ["#WorldInfo"]],
+        ["persona", ["#PersonaManagement", "#user_avatar_block"]],
+    ];
+    for (const [kind, selectors] of spots) {
+        if (document.getElementById(`vb-inline-${kind}`)) continue;
+        let anchor = null;
+        for (const selector of selectors) {
+            anchor = document.querySelector(selector);
+            if (anchor) break;
+        }
+        if (!anchor) continue;
+        const host = el("div", { id: `vb-inline-${kind}`, class: "vb-inline" });
+        anchor.prepend(host);
+        host.append(kindBlock(kind), el("p", { class: "vb-log" }, [state.log || ""]));
+    }
 }
 
 async function mount() {
-    if (document.getElementById("vellum-bridge-settings")) {
-        const root = document.getElementById("vb-root");
-        if (root && !root.childElementCount) render(root);
-        return;
-    }
-    const context = ctx();
-    let html = "";
-    for (const folder of ["third-party/vellum-bridge", "vellum-bridge"]) {
-        try {
-            html = await context.renderExtensionTemplateAsync(folder, "settings");
-            if (html) break;
-        } catch {
-            html = "";
+    if (!document.getElementById("vellum-bridge-settings")) {
+        const context = ctx();
+        let html = "";
+        for (const folder of ["third-party/vellum-bridge", "vellum-bridge"]) {
+            try {
+                html = await context.renderExtensionTemplateAsync(folder, "settings");
+                if (html) break;
+            } catch {
+                html = "";
+            }
+        }
+        const host = document.getElementById("extensions_settings2") || document.getElementById("extensions_settings");
+        if (host) {
+            if (html) host.insertAdjacentHTML("beforeend", html);
+            else host.insertAdjacentHTML("beforeend", `<div id="vellum-bridge-settings"><div id="vb-root"></div></div>`);
         }
     }
-    const host = document.getElementById("extensions_settings2") || document.getElementById("extensions_settings");
-    if (!host) return;
-    if (html) {
-        host.insertAdjacentHTML("beforeend", html);
-    } else {
-        host.insertAdjacentHTML("beforeend", `<div id="vellum-bridge-settings"><div id="vb-root"></div></div>`);
-    }
     const root = document.getElementById("vb-root");
-    if (root) render(root);
+    if (root && !root.childElementCount) render(root);
+    placeInline();
+    if (!mount.watching) {
+        mount.watching = true;
+        const observer = new MutationObserver(() => placeInline());
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
 }
 
 mount().catch((error) => console.error("Vellum Bridge", error));
