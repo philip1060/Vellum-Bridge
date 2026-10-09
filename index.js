@@ -46,8 +46,8 @@ async function api(path) {
     const body = await res.json().catch(() => null);
     if (!res.ok) {
         let message = body?.error?.message || `Vellum answered ${res.status}.`;
-        if (res.status === 404) message += ' If it is NSFW, it may be hidden by your Ratings settings on Vellum.';
-        throw new Error(message);
+        if (res.status === 404 && !path.startsWith('me/')) message += ' If it is NSFW, it may be hidden by your Ratings settings on Vellum.';
+        throw Object.assign(new Error(message), { status: res.status });
     }
     return body;
 }
@@ -274,6 +274,11 @@ function setStatus(text) {
     if (statusLine) statusLine.textContent = text;
 }
 
+/** SillyTavern's styles override the `hidden` attribute, so set display directly. */
+function showIf(node, visible) {
+    node.style.display = visible ? '' : 'none';
+}
+
 function button(label, onClick, extra = '') {
     return el('div', { className: `menu_button ${extra}`.trim(), textContent: label, onclick: onClick });
 }
@@ -297,6 +302,9 @@ function addRow() {
 }
 
 function browseSection() {
+    const show = el('select', { className: 'text_pole' },
+        el('option', { value: 'all', textContent: 'All of Vellum' }),
+        el('option', { value: 'favorites', textContent: 'My favorites' }));
     const kind = el('select', { className: 'text_pole' },
         ...Object.entries(KINDS).map(([k, v]) => el('option', { value: k, textContent: `${v.label}s` })));
     const sort = el('select', { className: 'text_pole' },
@@ -307,7 +315,15 @@ function browseSection() {
     const query = el('input', { className: 'text_pole', type: 'search', placeholder: 'Search Vellum' });
     const results = el('div', { className: 'vellum-results' });
     const more = button('More', () => load(true), 'vellum-more');
-    more.hidden = true;
+    const addAll = button('Add all shown', async () => {
+        const links = [...results.querySelectorAll('.vellum-result a')].map((a) => a.href);
+        if (!links.length) return;
+        addAll.classList.add('disabled');
+        await addFromText(links.join('\n'));
+        addAll.classList.remove('disabled');
+    }, 'vellum-more');
+    showIf(more, false);
+    showIf(addAll, false);
     let offset = 0;
 
     async function load(append = false) {
@@ -316,30 +332,39 @@ function browseSection() {
             results.replaceChildren();
         }
         const k = kind.value;
+        const favorites = show.value === 'favorites';
+        showIf(sort, !favorites);
         // Personas have no "loved" or "downloaded" sort; Vellum falls back to newest.
-        const params = new URLSearchParams({ q: query.value.trim(), sort: sort.value, limit: '24', offset: String(offset) });
+        const params = new URLSearchParams({ q: query.value.trim(), limit: '24', offset: String(offset) });
+        if (!favorites) params.set('sort', sort.value);
+        const path = favorites ? `me/favorites/${KINDS[k].api}` : KINDS[k].api;
         try {
-            const page = await api(`${KINDS[k].api}?${params}`);
+            const page = await api(`${path}?${params}`);
             for (const item of page.data) results.append(resultCard(k, item));
-            if (!results.childElementCount) results.append(el('p', { className: 'vellum-muted', textContent: 'Nothing found.' }));
+            if (!results.childElementCount) {
+                results.append(el('p', { className: 'vellum-muted', textContent: favorites ? 'No favorites here yet. Heart things on Vellum and they show up here.' : 'Nothing found.' }));
+            }
             offset = page.paging.next_offset ?? offset;
-            more.hidden = !page.paging.has_more;
+            showIf(more, page.paging.has_more);
         } catch (error) {
-            results.replaceChildren(el('p', { className: 'vellum-muted', textContent: error.message }));
-            more.hidden = true;
+            const message = favorites && error.status === 404
+                ? `Vellum does not offer ${KINDS[k].label.toLowerCase()} favorites to extensions yet.`
+                : error.message;
+            results.replaceChildren(el('p', { className: 'vellum-muted', textContent: message }));
+            showIf(more, false);
         }
+        showIf(addAll, Boolean(results.querySelector('.vellum-result')));
     }
 
     query.addEventListener('keydown', (e) => e.key === 'Enter' && load());
-    kind.addEventListener('change', () => load());
-    sort.addEventListener('change', () => load());
+    for (const select of [show, kind, sort]) select.addEventListener('change', () => load());
 
     return el('details', { className: 'vellum-browse', ontoggle: (e) => e.target.open && !results.childElementCount && load() },
         el('summary', { textContent: 'Browse Vellum' }),
-        el('div', { className: 'vellum-row' }, kind, sort),
+        el('div', { className: 'vellum-row' }, show, kind, sort),
         el('div', { className: 'vellum-row' }, query, button('Search', () => load())),
         results,
-        more);
+        el('div', { className: 'vellum-row' }, more, addAll));
 }
 
 function resultCard(kind, item) {
