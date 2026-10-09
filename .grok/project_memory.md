@@ -1,3 +1,0 @@
-- The Archives is the character-card archive project: Vellum (philip1060/vellum) is the feature base, local-chub-redux (https://gitlab.com/LuxusBolt/local-chub-redux) is the local library/download model to fold in. [2026-10-02]
-- The Archives must be login-only: admin accounts or whitelisted accounts. Needs Vellum categorized tags and character-card fields. Working name: The Archives. [2026-10-02]
-- First working app saved at artifacts/the-archives (Flask + SQLite). [2026-10-02]
