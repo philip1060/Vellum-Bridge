@@ -1,0 +1,91 @@
+#vellum_panel .vellum-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin: 4px 0;
+}
+
+#vellum_panel .vellum-row > .text_pole {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+#vellum_panel .vellum-link {
+    resize: vertical;
+}
+
+#vellum_panel .menu_button {
+    white-space: nowrap;
+    margin: 0;
+}
+
+#vellum_panel .vellum-muted {
+    opacity: 0.7;
+}
+
+#vellum_panel .vellum-status {
+    display: block;
+    min-height: 1.2em;
+}
+
+#vellum_panel details {
+    margin-top: 8px;
+}
+
+#vellum_panel summary {
+    cursor: pointer;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+#vellum_panel .vellum-key small,
+#vellum_panel .vellum-key label {
+    display: block;
+    margin-top: 4px;
+}
+
+#vellum_panel .vellum-results {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 420px;
+    overflow-y: auto;
+}
+
+#vellum_panel .vellum-result {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+}
+
+#vellum_panel .vellum-result img,
+#vellum_panel .vellum-noimg {
+    width: 40px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 4px;
+    flex-shrink: 0;
+    background: var(--SmartThemeBlurTintColor);
+}
+
+#vellum_panel .vellum-result-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+#vellum_panel .vellum-result-text a,
+#vellum_panel .vellum-result-text small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#vellum_panel .vellum-more {
+    margin-top: 4px;
+}

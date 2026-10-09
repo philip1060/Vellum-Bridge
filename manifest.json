@@ -1,0 +1,13 @@
+{
+    "display_name": "Vellum",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "philip1060",
+    "version": "2.0.0",
+    "homePage": "https://github.com/philip1060/Vellum-Bridge",
+    "auto_update": true,
+    "minimum_client_version": "1.12.0"
+}
