@@ -1,5 +1,7 @@
 # Vellum API changes needed for the SillyTavern extension
 
+> **Status: done.** Shipped in Vellum on the `claude-main-test` branch (commits `97be7ad`, `ef761ea`, `41acfa8`), including persona favorites and a `loved` sort for personas. Kept here as the record of what the extension relies on.
+
 **For:** the Vellum repo (`philip1060/vellum`)
 **Why:** the Vellum SillyTavern extension (`philip1060/Vellum-Bridge`) runs in the browser inside SillyTavern. It calls `https://vellum.thecentralempire.com/api/v1/*` directly with a read-only API key (`Authorization: Bearer vlm_...`). Two things it needs are missing from the public API today:
 

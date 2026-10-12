@@ -16,7 +16,7 @@ No bridge site: the extension talks to Vellum's own API with a read-only key.
 ## Use
 
 - **Paste and Add.** Paste one or more links, such as `https://vellum.thecentralempire.com/c/123` for a character, `/l/123` for a lorebook or `/p/123` for a persona, and press **Add** (or Enter).
-- **Feather button.** The feather beside *Import from external URL* in the character list opens the same box.
+- **Vellum buttons** (feather icon) sit in the character list next to *Import from external URL*, in **Persona Management** next to *Create*, and in **World Info** next to *Import*. Each opens the same paste box.
 - **`/vellum <link>`** does the same thing as a slash command.
 - **Browse Vellum** searches the shelf (newest, most loved, most downloaded), or shows **My favorites**, and adds with one click or **Add all shown**.
 
@@ -24,17 +24,12 @@ What you get:
 
 | Link | Becomes |
 | --- | --- |
-| `/c/…` | A character with its portrait, tags, greetings and embedded lorebook (SillyTavern asks about the lorebook as usual). |
+| `/c/…` | A character with its portrait, tags, greetings and embedded lorebook (SillyTavern asks about the lorebook as usual). Tags drop Vellum's category prefix, so `general:female` becomes `female`. |
 | `/l/…` | A World Info lorebook. |
 | `/p/…` | A persona with its picture, description and title. Adding it again updates it. |
 
 What the key can see follows your Ratings and blacklist settings on Vellum, so NSFW only shows up if you have it turned on there.
 
-## Waiting on Vellum
+## Vellum side
 
-Two parts depend on changes to Vellum itself, written up in [docs/vellum-api-changes.md](docs/vellum-api-changes.md):
-
-- **Portraits.** Until Vellum's pictures allow cross-site reads, characters and personas get a placeholder picture and a notice.
-- **My favorites.** Until Vellum offers `/api/v1/me/favorites/...`, Browse says favorites aren't available yet.
-
-Neither needs an extension update; both start working as soon as Vellum ships the change.
+Portraits and **My favorites** (characters, lorebooks and personas) rely on Vellum's API changes described in [docs/vellum-api-changes.md](docs/vellum-api-changes.md), which are now live. If your Vellum is older than that, the extension still works: pictures fall back to a placeholder, and Browse says favorites aren't offered yet.
