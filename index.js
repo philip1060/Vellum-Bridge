@@ -191,11 +191,23 @@ function fileName(name, fallback) {
 
 const notes = [];
 
+/** Vellum tags carry a category ("general:female"); SillyTavern gets just "female". */
+function plainTags(tags) {
+    if (!Array.isArray(tags)) return [];
+    const out = [];
+    for (const tag of tags) {
+        const plain = String(tag).replace(/^[^:]*:/, '').trim();
+        if (plain && !out.some((t) => t.toLowerCase() === plain.toLowerCase())) out.push(plain);
+    }
+    return out;
+}
+
 async function addCharacter(id) {
     const item = await api(`cards/${id}`);
     const card = structuredClone(item.card ?? {});
     const data = card.data ?? card;
     data.extensions = { ...(data.extensions ?? {}), vellum: { id: item.id, url: item.url } };
+    data.tags = plainTags(data.tags);
     const picture = await portrait(item.image_original_url || item.image_url, item.name);
     if (picture.missing) notes.push(`${item.name}: Vellum's picture could not be downloaded, so a placeholder was used.`);
     const png = await embedCard(picture.png, card);
@@ -435,20 +447,32 @@ function mountPanel() {
         el('div', { className: 'inline-drawer-content' }, addRow(), statusLine, browseSection(), keySection())));
 }
 
-/** A small button beside "Import from external URL" in the character list. */
-function mountCharacterButton() {
-    const anchor = document.getElementById('external_import_button');
-    if (!anchor || document.getElementById('vellum_import_button')) return;
-    const btn = el('div', {
-        id: 'vellum_import_button',
-        className: 'menu_button fa-solid fa-feather-pointed',
-        title: 'Add from Vellum',
-    });
-    btn.addEventListener('click', async () => {
-        const text = await callGenericPopup('Paste one or more Vellum links (characters, lorebooks or personas):', POPUP_TYPE.INPUT, '', { rows: 3, okButton: 'Add' });
-        if (text) await addFromText(text);
-    });
-    anchor.after(btn);
+async function askForLinks(what) {
+    const text = await callGenericPopup(`Paste one or more Vellum ${what} links:`, POPUP_TYPE.INPUT, '', { rows: 3, okButton: 'Add' });
+    if (text) await addFromText(text);
+}
+
+/** "Add from Vellum" buttons where SillyTavern keeps characters, personas and lorebooks. */
+function mountButtons() {
+    const spots = [
+        // Beside "Import from external URL" in the character list.
+        { id: 'vellum_import_button', anchor: 'external_import_button', what: 'character', icon: true },
+        // Beside "Create" in Persona Management.
+        { id: 'vellum_persona_button', anchor: 'create_dummy_persona', what: 'persona' },
+        // Beside "Import World Info" in the World Info panel.
+        { id: 'vellum_world_button', anchor: 'world_import_button', what: 'lorebook', icon: true },
+    ];
+    for (const spot of spots) {
+        const anchor = document.getElementById(spot.anchor);
+        if (!anchor || document.getElementById(spot.id)) continue;
+        const btn = spot.icon
+            ? el('div', { id: spot.id, className: 'menu_button fa-solid fa-feather-pointed', title: 'Add from Vellum' })
+            : el('div', { id: spot.id, className: 'menu_button menu_button_icon', title: 'Add a persona from Vellum' },
+                el('i', { className: 'fa-solid fa-feather-pointed fa-fw' }),
+                el('div', { textContent: 'Vellum' }));
+        btn.addEventListener('click', () => askForLinks(spot.what));
+        anchor.after(btn);
+    }
 }
 
 function registerCommand() {
@@ -469,6 +493,6 @@ function registerCommand() {
 jQuery(() => {
     settings();
     mountPanel();
-    mountCharacterButton();
+    mountButtons();
     registerCommand();
 });

@@ -16,7 +16,7 @@ No bridge site: the extension talks to Vellum's own API with a read-only key.
 ## Use
 
 - **Paste and Add.** Paste one or more links, such as `https://vellum.thecentralempire.com/c/123` for a character, `/l/123` for a lorebook or `/p/123` for a persona, and press **Add** (or Enter).
-- **Feather button.** The feather beside *Import from external URL* in the character list opens the same box.
+- **Vellum buttons** (feather icon) sit in the character list next to *Import from external URL*, in **Persona Management** next to *Create*, and in **World Info** next to *Import*. Each opens the same paste box.
 - **`/vellum <link>`** does the same thing as a slash command.
 - **Browse Vellum** searches the shelf (newest, most loved, most downloaded), or shows **My favorites**, and adds with one click or **Add all shown**.
 
@@ -24,7 +24,7 @@ What you get:
 
 | Link | Becomes |
 | --- | --- |
-| `/c/…` | A character with its portrait, tags, greetings and embedded lorebook (SillyTavern asks about the lorebook as usual). |
+| `/c/…` | A character with its portrait, tags, greetings and embedded lorebook (SillyTavern asks about the lorebook as usual). Tags drop Vellum's category prefix, so `general:female` becomes `female`. |
 | `/l/…` | A World Info lorebook. |
 | `/p/…` | A persona with its picture, description and title. Adding it again updates it. |
 
