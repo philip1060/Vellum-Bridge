@@ -334,7 +334,10 @@ function browseSection() {
         const k = kind.value;
         const favorites = show.value === 'favorites';
         showIf(sort, !favorites);
-        // Personas have no "loved" or "downloaded" sort; Vellum falls back to newest.
+        // Vellum keeps no download count for personas.
+        const downloaded = sort.querySelector('option[value="downloaded"]');
+        downloaded.disabled = k === 'p';
+        if (k === 'p' && sort.value === 'downloaded') sort.value = 'loved';
         const params = new URLSearchParams({ q: query.value.trim(), limit: '24', offset: String(offset) });
         if (!favorites) params.set('sort', sort.value);
         const path = favorites ? `me/favorites/${KINDS[k].api}` : KINDS[k].api;
@@ -373,7 +376,11 @@ function resultCard(kind, item) {
         if (await addFromText(item.url)) add.textContent = 'Added';
         add.classList.remove('disabled');
     }, 'vellum-add');
-    const meta = [item.creator, kind === 'l' && item.entries != null ? `${item.entries} entries` : null].filter(Boolean).join(' · ');
+    const meta = [
+        item.creator,
+        kind === 'l' && item.entries != null ? `${item.entries} entries` : null,
+        item.favorites ? `♥ ${item.favorites}` : null,
+    ].filter(Boolean).join(' · ');
     return el('div', { className: 'vellum-result' },
         item.image_url ? el('img', { src: item.image_url, loading: 'lazy', alt: '' }) : el('div', { className: 'vellum-noimg' }),
         el('div', { className: 'vellum-result-text' },

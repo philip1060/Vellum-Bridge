@@ -30,11 +30,6 @@ What you get:
 
 What the key can see follows your Ratings and blacklist settings on Vellum, so NSFW only shows up if you have it turned on there.
 
-## Waiting on Vellum
+## Vellum side
 
-Two parts depend on changes to Vellum itself, written up in [docs/vellum-api-changes.md](docs/vellum-api-changes.md):
-
-- **Portraits.** Until Vellum's pictures allow cross-site reads, characters and personas get a placeholder picture and a notice.
-- **My favorites.** Until Vellum offers `/api/v1/me/favorites/...`, Browse says favorites aren't available yet.
-
-Neither needs an extension update; both start working as soon as Vellum ships the change.
+Portraits and **My favorites** (characters, lorebooks and personas) rely on Vellum's API changes described in [docs/vellum-api-changes.md](docs/vellum-api-changes.md), which are now live. If your Vellum is older than that, the extension still works: pictures fall back to a placeholder, and Browse says favorites aren't offered yet.
