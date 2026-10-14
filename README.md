@@ -28,6 +28,22 @@ What you get:
 | `/l/…` | A World Info lorebook. |
 | `/p/…` | A persona with its picture, description and title. Adding it again updates it. |
 
+## Persona PNGs
+
+In **Persona Management**:
+
+- **Export** (the file-export icon beside the open persona's Rename / Duplicate buttons) saves the persona as a PNG.
+- **Import** (beside *Create*) turns a PNG into a persona. That can be a persona export, or any ordinary character card.
+
+The PNG is a normal SillyTavern character card, so it works without this extension too:
+
+- **Name and picture:** the persona's own.
+- **Description:** has `{{user}}` and `{{char}}` swapped, so it reads correctly as a card.
+- **Linked lorebook:** embedded the way SillyTavern embeds a character's lorebook.
+- **Title, prompt position, depth and role:** kept in `data.extensions.persona`. The extension restores them on import.
+
+Someone without the extension can drop the PNG into the character list and use SillyTavern's **Convert to Persona** (saying yes to swapping the macros). The card's Creator's Notes explain that.
+
 What the key can see follows your Ratings and blacklist settings on Vellum, so NSFW only shows up if you have it turned on there.
 
 ## Vellum side
