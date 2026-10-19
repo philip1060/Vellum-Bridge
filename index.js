@@ -2,8 +2,8 @@
 // Talks to Vellum's own API (/api/v1) with a read-only key, then hands the result to
 // SillyTavern's normal importers, so it behaves exactly like dropping in a file.
 import { getRequestHeaders, processDroppedFiles } from '../../../../script.js';
-import { convertCharacterBook, importWorldInfo } from '../../../world-info.js';
-import { getUserAvatars, initPersona } from '../../../personas.js';
+import { convertCharacterBook, importWorldInfo, loadWorldInfo, saveWorldInfo, updateWorldInfoList, world_names } from '../../../world-info.js';
+import { getUserAvatar, getUserAvatars, initPersona, setPersonaDescription, user_avatar } from '../../../personas.js';
 import { callGenericPopup, POPUP_TYPE } from '../../../popup.js';
 
 const MODULE = 'vellum';
@@ -147,20 +147,50 @@ function base64Utf8(text) {
 }
 
 /** Write the card into the PNG the way SillyTavern does: tEXt `chara` (V2) and `ccv3` (V3). */
-async function embedCard(png, card) {
-    const bytes = new Uint8Array(await png.arrayBuffer());
-    const view = new DataView(bytes.buffer);
-    const keep = [];
+/** Each PNG chunk up to IEND: its type, its data, and the whole chunk (length, type, data, CRC). */
+function* pngChunks(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let offset = 8;
     while (offset + 12 <= bytes.length) {
         const length = view.getUint32(offset);
         const type = String.fromCharCode(...bytes.subarray(offset + 4, offset + 8));
         const end = offset + 12 + length;
-        if (type === 'IEND' || end > bytes.length) break;
-        const data = bytes.subarray(offset + 8, offset + 8 + length);
-        const keyword = type === 'tEXt' ? new TextDecoder().decode(data.subarray(0, data.indexOf(0))).toLowerCase() : '';
-        if (keyword !== 'chara' && keyword !== 'ccv3') keep.push(bytes.subarray(offset, end));
+        if (type === 'IEND' || end > bytes.length) return;
+        yield { type, data: bytes.subarray(offset + 8, offset + 8 + length), raw: bytes.subarray(offset, end) };
         offset = end;
+    }
+}
+
+function textKeyword(chunk) {
+    return chunk.type === 'tEXt' ? new TextDecoder().decode(chunk.data.subarray(0, chunk.data.indexOf(0))).toLowerCase() : '';
+}
+
+/** The character card inside a PNG (V3 `ccv3` first, then V2 `chara`), or null. */
+function readCard(bytes) {
+    if (bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
+    const texts = {};
+    for (const chunk of pngChunks(bytes)) {
+        const keyword = textKeyword(chunk);
+        if (keyword === 'ccv3' || keyword === 'chara') texts[keyword] = chunk.data.subarray(chunk.data.indexOf(0) + 1);
+    }
+    for (const keyword of ['ccv3', 'chara']) {
+        if (!texts[keyword]) continue;
+        try {
+            const binary = atob(new TextDecoder().decode(texts[keyword]));
+            return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0))));
+        } catch {
+            // try the other one
+        }
+    }
+    return null;
+}
+
+async function embedCard(png, card) {
+    const bytes = new Uint8Array(await png.arrayBuffer());
+    const keep = [];
+    for (const chunk of pngChunks(bytes)) {
+        const keyword = textKeyword(chunk);
+        if (keyword !== 'chara' && keyword !== 'ccv3') keep.push(chunk.raw);
     }
     const data = card.data ?? card;
     const text = (keyword, json) => {
@@ -272,6 +302,205 @@ async function addFromText(text) {
     setStatus(added ? `Added ${added} of ${links.length}.` : '');
     return added;
 }
+
+// ---- persona PNGs --------------------------------------------------------------------
+// A persona is saved as an ordinary SillyTavern character card, so without this extension it
+// still opens as a character and SillyTavern's own "Convert to Persona" turns it back. The
+// description has {{user}} and {{char}} swapped (as a card it describes {{char}}), the linked
+// lorebook rides along as the card's embedded lorebook, and the persona-only settings sit in
+// data.extensions.persona.
+
+const PERSONA_NOTE = 'This is a SillyTavern persona saved as a character card. To use it as a persona, import it under '
+    + 'Persona Management with the Vellum extension, or import it as a character and use "Convert to Persona" '
+    + '(say yes to swapping {{char}} and {{user}}).';
+
+function swapUserChar(text) {
+    return String(text ?? '').replace(/{{(char|user)}}/gi, (_, who) => (who.toLowerCase() === 'char' ? '{{user}}' : '{{char}}'));
+}
+
+/** SillyTavern World Info as a card's embedded lorebook, the way SillyTavern writes it itself. */
+function worldToCharacterBook(name, world) {
+    const entries = Object.values(world?.entries ?? {}).map((e) => ({
+        id: e.uid,
+        keys: e.key ?? [],
+        secondary_keys: e.keysecondary ?? [],
+        comment: e.comment ?? '',
+        content: e.content ?? '',
+        constant: !!e.constant,
+        selective: !!e.selective,
+        insertion_order: e.order ?? 100,
+        enabled: !e.disable,
+        position: e.position == 0 ? 'before_char' : 'after_char',
+        use_regex: true,
+        extensions: {
+            ...e.extensions,
+            position: e.position,
+            exclude_recursion: e.excludeRecursion,
+            display_index: e.displayIndex,
+            probability: e.probability ?? null,
+            useProbability: e.useProbability ?? false,
+            depth: e.depth ?? 4,
+            selectiveLogic: e.selectiveLogic ?? 0,
+            outlet_name: e.outletName ?? '',
+            group: e.group ?? '',
+            group_override: e.groupOverride ?? false,
+            group_weight: e.groupWeight ?? null,
+            prevent_recursion: e.preventRecursion ?? false,
+            delay_until_recursion: e.delayUntilRecursion ?? false,
+            scan_depth: e.scanDepth ?? null,
+            match_whole_words: e.matchWholeWords ?? null,
+            use_group_scoring: e.useGroupScoring ?? false,
+            case_sensitive: e.caseSensitive ?? null,
+            automation_id: e.automationId ?? '',
+            role: e.role ?? 0,
+            vectorized: e.vectorized ?? false,
+            sticky: e.sticky ?? null,
+            cooldown: e.cooldown ?? null,
+            delay: e.delay ?? null,
+            match_persona_description: e.matchPersonaDescription ?? false,
+            match_character_description: e.matchCharacterDescription ?? false,
+            match_character_personality: e.matchCharacterPersonality ?? false,
+            match_character_depth_prompt: e.matchCharacterDepthPrompt ?? false,
+            match_scenario: e.matchScenario ?? false,
+            match_creator_notes: e.matchCreatorNotes ?? false,
+            triggers: e.triggers ?? [],
+            ignore_budget: e.ignoreBudget ?? false,
+        },
+    }));
+    return { name, entries };
+}
+
+function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/** Save the persona that is open in Persona Management as a character-card PNG. */
+async function exportPersona() {
+    const power = ctx().powerUserSettings;
+    const avatarId = user_avatar;
+    const name = power.personas?.[avatarId];
+    if (!name) {
+        toastr.warning('Pick a persona first.');
+        return;
+    }
+    const persona = power.persona_descriptions?.[avatarId] ?? {};
+    const picture = await fetch(getUserAvatar(encodeURIComponent(avatarId))).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+    const png = picture ? await toPng(picture) : await placeholder(name);
+
+    let book = null;
+    if (persona.lorebook && world_names?.includes(persona.lorebook)) {
+        const world = await loadWorldInfo(persona.lorebook);
+        if (world?.entries && Object.keys(world.entries).length) book = worldToCharacterBook(persona.lorebook, world);
+    }
+    const data = {
+        name,
+        description: swapUserChar(persona.description ?? ''),
+        personality: '',
+        scenario: '',
+        first_mes: '',
+        mes_example: '',
+        creator_notes: PERSONA_NOTE,
+        system_prompt: '',
+        post_history_instructions: '',
+        alternate_greetings: [],
+        group_only_greetings: [],
+        tags: ['persona'],
+        creator: '',
+        character_version: '',
+        extensions: {
+            persona: {
+                version: 1,
+                title: persona.title ?? '',
+                position: persona.position,
+                depth: persona.depth,
+                role: persona.role,
+                lorebook: book ? persona.lorebook : '',
+            },
+            ...(book ? { world: persona.lorebook } : {}),
+        },
+        ...(book ? { character_book: book } : {}),
+    };
+    downloadBlob(await embedCard(png, { data }), `${fileName(name, 'persona')}.png`);
+    toastr.success(`Saved ${name} as a PNG.`);
+}
+
+/** Keep an embedded lorebook as World Info; returns the name it was saved under. */
+async function saveEmbeddedBook(book, wanted) {
+    const name = fileName(wanted, 'Persona lorebook');
+    if (world_names?.includes(name)) {
+        const replace = await callGenericPopup(`A lorebook named "${name}" already exists. Replace it with the one in this persona?`, POPUP_TYPE.CONFIRM);
+        if (!replace) return name;
+    }
+    await saveWorldInfo(name, convertCharacterBook(structuredClone(book)), true);
+    await updateWorldInfoList();
+    return name;
+}
+
+/** Make a persona from a character-card PNG: a persona export, or any character card. */
+async function importPersonaFile(file) {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const card = readCard(bytes);
+    if (!card) throw new Error('There is no character card inside this PNG.');
+    const data = card.data ?? card;
+    const name = String(data.name ?? '').trim() || file.name.replace(/\.png$/i, '');
+    const saved = data.extensions?.persona ?? {};
+    const power = ctx().powerUserSettings;
+
+    const avatarId = `${fileName(name, 'persona')} (Persona).png`;
+    if (power.personas?.[avatarId]) {
+        const replace = await callGenericPopup(`The persona "${name}" already exists. Replace it?`, POPUP_TYPE.CONFIRM);
+        if (!replace) return null;
+    }
+
+    let lorebook = '';
+    if (data.character_book?.entries?.length) {
+        lorebook = await saveEmbeddedBook(data.character_book, data.extensions?.world || data.character_book.name || `${name} lorebook`);
+    } else if (saved.lorebook && world_names?.includes(saved.lorebook)) {
+        lorebook = saved.lorebook;
+    }
+
+    const form = new FormData();
+    form.append('avatar', new File([bytes], avatarId, { type: 'image/png' }));
+    form.append('overwrite_name', avatarId);
+    const res = await fetch('/api/avatars/upload', {
+        method: 'POST',
+        headers: getRequestHeaders({ omitContentType: true }),
+        body: form,
+    });
+    if (!res.ok) throw new Error(`SillyTavern refused the picture (${res.status}).`);
+    const { path } = await res.json().catch(() => ({}));
+    const id = path || avatarId;
+
+    const description = swapUserChar(data.description ?? '');
+    const options = { lorebook };
+    for (const key of ['position', 'depth', 'role']) if (saved[key] !== undefined && saved[key] !== null) options[key] = saved[key];
+    await initPersona(id, name, description, saved.title ?? '', options);
+    if (user_avatar === id) {
+        power.persona_description = description;
+        setPersonaDescription();
+    }
+    await getUserAvatars(true, id);
+    return name;
+}
+
+const personaPicker = el('input', { type: 'file', accept: '.png,image/png', multiple: true, hidden: true });
+personaPicker.addEventListener('change', async () => {
+    const files = [...personaPicker.files];
+    personaPicker.value = '';
+    for (const file of files) {
+        try {
+            const name = await importPersonaFile(file);
+            if (name) toastr.success(`Persona added: ${name}`);
+        } catch (error) {
+            toastr.error(error.message, `Could not import ${file.name}`);
+        }
+    }
+});
 
 // ---- panel -----------------------------------------------------------------------------
 
@@ -472,6 +701,23 @@ function mountButtons() {
                 el('div', { textContent: 'Vellum' }));
         btn.addEventListener('click', () => askForLinks(spot.what));
         anchor.after(btn);
+    }
+
+    // Persona PNGs: Import beside Create, Export with the open persona's own buttons.
+    const create = document.getElementById('create_dummy_persona');
+    if (create && !document.getElementById('vellum_persona_import')) {
+        const importBtn = el('div', { id: 'vellum_persona_import', className: 'menu_button menu_button_icon', title: 'Import a persona from a PNG (a persona export or any character card)' },
+            el('i', { className: 'fa-solid fa-file-import fa-fw' }),
+            el('div', { textContent: 'Import' }));
+        importBtn.addEventListener('click', () => personaPicker.click());
+        create.after(importBtn);
+        document.body.append(personaPicker);
+    }
+    const duplicate = document.getElementById('persona_duplicate_button');
+    if (duplicate && !document.getElementById('vellum_persona_export')) {
+        const exportBtn = el('div', { id: 'vellum_persona_export', className: 'menu_button fa-solid fa-file-export', title: 'Export this persona as a PNG' });
+        exportBtn.addEventListener('click', () => exportPersona().catch((error) => toastr.error(error.message, 'Could not export the persona')));
+        duplicate.after(exportBtn);
     }
 }
 
