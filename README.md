@@ -11,14 +11,23 @@ No bridge site: the extension talks to Vellum's own API with a read-only key.
    (the repository has to be public for this; otherwise download it and put the folder in
    `SillyTavern/public/scripts/extensions/third-party/`).
 2. On Vellum, open **Settings → API keys** and make a key.
-3. In SillyTavern open **Extensions → Vellum → API key**, paste it, and press **Check**.
+3. In SillyTavern open **Extensions → Vellum → Sites and API keys**, paste it into the Vellum entry, and press **Check**.
+
+### A second site (The Scriptorium)
+
+A Scriptorium has the same API, so it can sit next to Vellum:
+
+1. On the Scriptorium, open **Settings → API keys** and make a key (it starts with `scr_`).
+2. In SillyTavern, under **Extensions → Vellum → Sites and API keys**, press **Add a site**, enter the Scriptorium's address and the key, and press **Check**. The name fills itself in.
+
+A pasted link goes to the site whose address it has, so Vellum and Scriptorium links can be mixed in one paste. A link to a site that isn't listed is skipped with a note. A bare `c/123` goes to Vellum. Browse gets a site picker, and only shows what each site offers (a Scriptorium has characters and lorebooks, no personas). `/scriptorium` works as another name for `/vellum`.
 
 ## Use
 
-- **Paste and Add.** Paste one or more links, such as `https://vellum.thecentralempire.com/c/123` for a character, `/l/123` for a lorebook or `/p/123` for a persona, and press **Add** (or Enter).
+- **Paste and Add.** Paste one or more links from any listed site, such as `https://vellum.thecentralempire.com/c/123` for a character, `/l/123` for a lorebook or `/p/123` for a persona, and press **Add** (or Enter).
 - **Vellum buttons** (feather icon) sit in the character list next to *Import from external URL*, in **Persona Management** next to *Create*, and in **World Info** next to *Import*. Each opens the same paste box.
 - **`/vellum <link>`** does the same thing as a slash command.
-- **Browse Vellum** searches the shelf (newest, most loved, most downloaded), or shows **My favorites**, and adds with one click or **Add all shown**.
+- **Browse** searches a site's shelf (newest, most loved, most downloaded), or shows **My favorites**, and adds with one click or **Add all shown**.
 
 What you get:
 
@@ -44,7 +53,7 @@ The PNG is a normal SillyTavern character card, so it works without this extensi
 
 Someone without the extension can drop the PNG into the character list and use SillyTavern's **Convert to Persona** (saying yes to swapping the macros). The card's Creator's Notes explain that.
 
-What the key can see follows your Ratings and blacklist settings on Vellum, so NSFW only shows up if you have it turned on there.
+What a key can see follows your Ratings and blacklist settings on that site, so NSFW only shows up if you have it turned on there.
 
 ## Vellum side
 

@@ -1,6 +1,8 @@
 // Vellum for SillyTavern: paste a Vellum link, press Add.
 // Talks to Vellum's own API (/api/v1) with a read-only key, then hands the result to
-// SillyTavern's normal importers, so it behaves exactly like dropping in a file.
+// SillyTavern's normal importers, so it behaves exactly like dropping in a file. Other sites
+// with the same API (The Scriptorium) can be listed too, each with its own address and key;
+// the host of a pasted link decides which site it comes from.
 import { getRequestHeaders, processDroppedFiles } from '../../../../script.js';
 import { convertCharacterBook, importWorldInfo, loadWorldInfo, saveWorldInfo, updateWorldInfoList, world_names } from '../../../world-info.js';
 import { getUserAvatar, getUserAvatars, initPersona, setPersonaDescription, user_avatar } from '../../../personas.js';
@@ -13,49 +15,138 @@ const KINDS = {
     l: { api: 'lorebooks', label: 'Lorebook' },
     p: { api: 'personas', label: 'Persona' },
 };
+const ALL_KINDS = ['cards', 'lorebooks', 'personas'];
 
 // ---- settings --------------------------------------------------------------------------
+// extensionSettings.vellum = { sites: [{ id, label, url, apiKey, name?, kinds? }], defaultSite }
+// The 'vellum' entry is always there; bare links like "c/123" go to defaultSite.
 
 function ctx() {
     return SillyTavern.getContext();
 }
 
+/** "Vellum.example.com/" → "https://vellum.example.com"; null when it is not an address. */
+function normalizeUrl(raw) {
+    let text = String(raw ?? '').trim();
+    if (!text) return null;
+    if (!/^https?:\/\//i.test(text)) text = `https://${text}`;
+    try {
+        const url = new URL(text);
+        return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+    } catch {
+        return null;
+    }
+}
+
+/** The part two addresses must share to be the same site: the origin, with or without www. */
+function originKey(raw) {
+    try {
+        const url = new URL(raw);
+        return `${url.protocol}//${url.host.replace(/^www\./, '')}`;
+    } catch {
+        return '';
+    }
+}
+
 function settings() {
     const all = ctx().extensionSettings;
-    all[MODULE] ??= {};
-    all[MODULE].apiKey ??= '';
-    all[MODULE].site ??= DEFAULT_SITE;
-    return all[MODULE];
+    const s = (all[MODULE] ??= {});
+    if (!Array.isArray(s.sites)) {
+        // Older versions kept one address and one key.
+        s.sites = [{ id: 'vellum', label: 'Vellum', url: normalizeUrl(s.site) || DEFAULT_SITE, apiKey: s.apiKey || '' }];
+        delete s.site;
+        delete s.apiKey;
+    }
+    if (!s.sites.some((x) => x.id === 'vellum')) s.sites.unshift({ id: 'vellum', label: 'Vellum', url: DEFAULT_SITE, apiKey: '' });
+    s.defaultSite ??= 'vellum';
+    return s;
 }
 
-function site() {
-    return (settings().site || DEFAULT_SITE).trim().replace(/\/+$/, '');
+function saveSettings() {
+    ctx().saveSettingsDebounced();
 }
 
-// ---- Vellum API ------------------------------------------------------------------------
+function siteLabel(site) {
+    if (site.label?.trim()) return site.label.trim();
+    if (site.name) return site.name;
+    try {
+        return new URL(site.url).host;
+    } catch {
+        return 'this site';
+    }
+}
 
-async function api(path) {
-    const key = settings().apiKey.trim();
-    if (!key) throw new Error('Add your Vellum API key first (Extensions → Vellum).');
+function defaultSite() {
+    const s = settings();
+    return s.sites.find((x) => x.id === s.defaultSite) ?? s.sites[0];
+}
+
+function siteForUrl(raw) {
+    const key = originKey(raw);
+    return key ? settings().sites.find((x) => x.url && originKey(x.url) === key) ?? null : null;
+}
+
+/** What a site offers: what its /me said, or everything for Vellum until it is checked. */
+function siteKinds(site) {
+    return site.kinds ?? (site.id === 'vellum' ? ALL_KINDS : null);
+}
+
+/** The keyed sites (that offer `kind`, when given) by name: "Vellum or The Scriptorium". */
+function siteNames(kind) {
+    const names = settings().sites
+        .filter((x) => x.apiKey?.trim() && (!kind || (siteKinds(x) ?? ALL_KINDS).includes(kind)))
+        .map(siteLabel);
+    if (names.length <= 1) return names[0] ?? 'Vellum';
+    return `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`;
+}
+
+// ---- the API ---------------------------------------------------------------------------
+
+/** A hint when the key looks like it belongs to the other kind of site. */
+function keyMismatch(site, key) {
+    const scriptorium = site.name ? site.name !== 'Vellum' : site.id !== 'vellum';
+    if (key.startsWith('scr_') && !scriptorium) return ' That is a Scriptorium key (scr_…), but this address is Vellum.';
+    if (key.startsWith('vlm_') && scriptorium) return ` That is a Vellum key (vlm_…), but this address is ${siteLabel(site)}.`;
+    return '';
+}
+
+async function api(site, path) {
+    const label = siteLabel(site);
+    const key = (site.apiKey ?? '').trim();
+    if (!key) throw new Error(`Add your ${label} API key first (Extensions → Vellum).`);
     let res;
     try {
-        res = await fetch(`${site()}/api/v1/${path}`, { headers: { Authorization: `Bearer ${key}` } });
+        res = await fetch(`${site.url}/api/v1/${path}`, { headers: { Authorization: `Bearer ${key}` } });
     } catch {
-        throw new Error('Could not reach Vellum. Check the site address.');
+        throw new Error(`Could not reach ${label}. Check its address.`);
     }
     const body = await res.json().catch(() => null);
     if (!res.ok) {
-        let message = body?.error?.message || `Vellum answered ${res.status}.`;
-        if (res.status === 404 && !path.startsWith('me/')) message += ' If it is NSFW, it may be hidden by your Ratings settings on Vellum.';
-        throw Object.assign(new Error(message), { status: res.status });
+        // A 403 not_let_in (a private site that no longer lets the key's owner in) is shown as is.
+        let message = body?.error?.message || `${label} answered ${res.status}.`;
+        if (res.status === 401) message += keyMismatch(site, key);
+        if (res.status === 404 && /^(cards|lorebooks|personas)\/\d+$/.test(path)) {
+            message += ` If it is NSFW, it may be hidden by your Ratings settings on ${label}.`;
+        }
+        throw Object.assign(new Error(message), { status: res.status, code: body?.error?.code });
     }
     return body;
 }
 
-/** "https://…/c/85042", "c/85042" → { kind: 'c', id: '85042' } */
+/**
+ * "https://host/c/85042" → { site, kind: 'c', id: '85042' }; "c/85042" → the default site;
+ * a host that is not in the list → { unknownHost }.
+ */
 function parseLink(text) {
-    const match = String(text).trim().match(/(?:^|\/)([clp])\/([1-9]\d{0,9})(?=$|[/?#-])/);
-    return match ? { kind: match[1], id: match[2] } : null;
+    const raw = String(text).trim();
+    const match = raw.match(/(?:^|\/)([clp])\/([1-9]\d{0,9})(?=$|[/?#-])/);
+    if (!match) return null;
+    const link = { kind: match[1], id: match[2], site: defaultSite() };
+    if (/^https?:\/\//i.test(raw)) {
+        link.site = siteForUrl(raw);
+        if (!link.site) link.unknownHost = new URL(raw).host;
+    }
+    return link;
 }
 
 // ---- pictures --------------------------------------------------------------------------
@@ -232,21 +323,31 @@ function plainTags(tags) {
     return out;
 }
 
-async function addCharacter(id) {
-    const item = await api(`cards/${id}`);
+function pictureNote(site, name) {
+    notes.push(`${name}: the picture on ${siteLabel(site)} could not be downloaded, so a placeholder was used.`);
+}
+
+/** Where a card came from, kept in the card: the same `vellum` key as before, plus the site. */
+function origin(site, item) {
+    return { id: item.id, url: item.url, site: site.url, site_name: siteLabel(site) };
+}
+
+async function addCharacter(site, id) {
+    const item = await api(site, `cards/${id}`);
     const card = structuredClone(item.card ?? {});
     const data = card.data ?? card;
-    data.extensions = { ...(data.extensions ?? {}), vellum: { id: item.id, url: item.url } };
+    data.extensions = { ...(data.extensions ?? {}), vellum: origin(site, item) };
     data.tags = plainTags(data.tags);
+    // Picture addresses are used exactly as given: a private site's come signed (?exp=…&sig=…).
     const picture = await portrait(item.image_original_url || item.image_url, item.name);
-    if (picture.missing) notes.push(`${item.name}: Vellum's picture could not be downloaded, so a placeholder was used.`);
+    if (picture.missing) pictureNote(site, item.name);
     const png = await embedCard(picture.png, card);
     await processDroppedFiles([new File([png], `${fileName(item.name, 'character')}.png`, { type: 'image/png' })]);
     return item.name;
 }
 
-async function addLorebook(id) {
-    const item = await api(`lorebooks/${id}`);
+async function addLorebook(site, id) {
+    const item = await api(site, `lorebooks/${id}`);
     let book = item.lorebook ?? {};
     if (book.spec === 'lorebook_v3' && book.data) book = book.data;
     if (Array.isArray(book.entries)) book = convertCharacterBook(structuredClone(book));
@@ -255,12 +356,18 @@ async function addLorebook(id) {
     return item.name;
 }
 
-async function addPersona(id) {
-    const item = await api(`personas/${id}`);
+/** One avatar file per persona per site, so adding it again updates it instead of duplicating. */
+function personaAvatarName(site, id) {
+    if (site.id === 'vellum') return `vellum-p${id}.png`;
+    const host = new URL(site.url).host.replace(/^www\./, '').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+    return `vellum-${host}-p${id}.png`;
+}
+
+async function addPersona(site, id) {
+    const item = await api(site, `personas/${id}`);
     const picture = await portrait(item.image_original_url || item.image_url, item.name);
-    if (picture.missing) notes.push(`${item.name}: Vellum's picture could not be downloaded, so a placeholder was used.`);
-    // One avatar file per Vellum persona, so adding it again updates it instead of duplicating.
-    const avatarName = `vellum-p${item.id}.png`;
+    if (picture.missing) pictureNote(site, item.name);
+    const avatarName = personaAvatarName(site, item.id);
     const form = new FormData();
     form.append('avatar', new File([picture.png], avatarName, { type: 'image/png' }));
     form.append('overwrite_name', avatarName);
@@ -280,22 +387,32 @@ async function addPersona(id) {
 
 const ADDERS = { c: addCharacter, l: addLorebook, p: addPersona };
 
-/** Add every Vellum link found in the text. Returns how many worked. */
+/** Add every link found in the text, each from its own site. Returns how many worked. */
 async function addFromText(text) {
     const links = String(text).split(/\s+/).map(parseLink).filter(Boolean);
     if (!links.length) {
-        toastr.warning('Paste a Vellum link like …/c/123 (character), …/l/123 (lorebook) or …/p/123 (persona).');
+        toastr.warning('Paste a link like …/c/123 (character), …/l/123 (lorebook) or …/p/123 (persona).');
         return 0;
     }
     notes.length = 0;
     let added = 0;
     for (const link of links) {
-        setStatus(`Adding ${KINDS[link.kind].label.toLowerCase()} ${link.id}…`);
+        const what = `${KINDS[link.kind].label} ${link.id}`;
+        if (link.unknownHost) {
+            toastr.warning(`Add ${link.unknownHost} under Extensions → Vellum → Sites to add from it.`, what);
+            continue;
+        }
+        const kinds = siteKinds(link.site);
+        if (kinds && !kinds.includes(KINDS[link.kind].api)) {
+            toastr.warning(`${siteLabel(link.site)} has no ${KINDS[link.kind].api}.`, what);
+            continue;
+        }
+        setStatus(`Adding ${what.toLowerCase()} from ${siteLabel(link.site)}…`);
         try {
-            await ADDERS[link.kind](link.id);
+            await ADDERS[link.kind](link.site, link.id);
             added++;
         } catch (error) {
-            toastr.error(error.message, `Vellum: ${KINDS[link.kind].label} ${link.id}`);
+            toastr.error(error.message, `${siteLabel(link.site)}: ${what}`);
         }
     }
     for (const note of notes) toastr.info(note, 'Vellum', { timeOut: 10000 });
@@ -528,7 +645,7 @@ function addRow() {
     const input = el('textarea', {
         className: 'text_pole vellum-link',
         rows: 1,
-        placeholder: 'Paste a Vellum link (character, lorebook or persona)',
+        placeholder: 'Paste a link from Vellum or another site you added',
     });
     const go = async () => {
         if (await addFromText(input.value)) input.value = '';
@@ -542,12 +659,21 @@ function addRow() {
     return el('div', { className: 'vellum-row' }, input, button('Add', go, 'vellum-add'));
 }
 
+/** Remember what a site's /me said: its name and what it offers. */
+function remember(site, me) {
+    site.name = me.site?.name ?? 'Vellum';
+    site.kinds = Array.isArray(me.site?.kinds) ? me.site.kinds : ALL_KINDS;
+    saveSettings();
+}
+
+let refreshBrowseSites = () => {};
+
 function browseSection() {
+    const siteSel = el('select', { className: 'text_pole' });
     const show = el('select', { className: 'text_pole' },
         el('option', { value: 'all', textContent: 'All of Vellum' }),
         el('option', { value: 'favorites', textContent: 'My favorites' }));
-    const kind = el('select', { className: 'text_pole' },
-        ...Object.entries(KINDS).map(([k, v]) => el('option', { value: k, textContent: `${v.label}s` })));
+    const kind = el('select', { className: 'text_pole' });
     const sort = el('select', { className: 'text_pole' },
         el('option', { value: 'new', textContent: 'Newest' }),
         el('option', { value: 'loved', textContent: 'Most loved' }),
@@ -567,12 +693,45 @@ function browseSection() {
     showIf(addAll, false);
     let offset = 0;
 
+    const currentSite = () => settings().sites.find((x) => x.id === siteSel.value) ?? defaultSite();
+
+    /** The site picker lists the sites that have a key; it hides when there is only one. */
+    function fillSites() {
+        const keyed = settings().sites.filter((x) => x.apiKey?.trim());
+        const was = siteSel.value;
+        siteSel.replaceChildren(...keyed.map((x) => el('option', { value: x.id, textContent: siteLabel(x) })));
+        if (keyed.some((x) => x.id === was)) siteSel.value = was;
+        showIf(siteSel, keyed.length > 1);
+    }
+
+    /** Only the kinds this site offers (asks its /me the first time). */
+    async function fillKinds(site) {
+        let kinds = siteKinds(site);
+        if (!kinds) {
+            try {
+                remember(site, await api(site, 'me'));
+                kinds = site.kinds;
+            } catch {
+                kinds = ALL_KINDS;
+            }
+        }
+        const was = kind.value;
+        kind.replaceChildren(...Object.entries(KINDS)
+            .filter(([, v]) => kinds.includes(v.api))
+            .map(([k, v]) => el('option', { value: k, textContent: `${v.label}s` })));
+        if ([...kind.options].some((o) => o.value === was)) kind.value = was;
+        const label = siteLabel(site);
+        show.options[0].textContent = `All of ${label}`;
+        query.placeholder = `Search ${label}`;
+    }
+
     async function load(append = false) {
         if (!append) {
             offset = 0;
             results.replaceChildren();
         }
-        const k = kind.value;
+        const site = currentSite();
+        const k = kind.value || 'c';
         const favorites = show.value === 'favorites';
         showIf(sort, !favorites);
         // Vellum keeps no download count for personas.
@@ -583,16 +742,19 @@ function browseSection() {
         if (!favorites) params.set('sort', sort.value);
         const path = favorites ? `me/favorites/${KINDS[k].api}` : KINDS[k].api;
         try {
-            const page = await api(`${path}?${params}`);
+            const page = await api(site, `${path}?${params}`);
             for (const item of page.data) results.append(resultCard(k, item));
             if (!results.childElementCount) {
-                results.append(el('p', { className: 'vellum-muted', textContent: favorites ? 'No favorites here yet. Heart things on Vellum and they show up here.' : 'Nothing found.' }));
+                results.append(el('p', {
+                    className: 'vellum-muted',
+                    textContent: favorites ? `No favorites here yet. Heart things on ${siteLabel(site)} and they show up here.` : 'Nothing found.',
+                }));
             }
             offset = page.paging.next_offset ?? offset;
             showIf(more, page.paging.has_more);
         } catch (error) {
             const message = favorites && error.status === 404
-                ? `Vellum does not offer ${KINDS[k].label.toLowerCase()} favorites to extensions yet.`
+                ? `${siteLabel(site)} does not offer ${KINDS[k].label.toLowerCase()} favorites to extensions.`
                 : error.message;
             results.replaceChildren(el('p', { className: 'vellum-muted', textContent: message }));
             showIf(more, false);
@@ -600,15 +762,34 @@ function browseSection() {
         showIf(addAll, Boolean(results.querySelector('.vellum-result')));
     }
 
+    async function reload() {
+        fillSites();
+        await fillKinds(currentSite());
+        await load();
+    }
+
     query.addEventListener('keydown', (e) => e.key === 'Enter' && load());
+    siteSel.addEventListener('change', async () => {
+        await fillKinds(currentSite());
+        await load();
+    });
     for (const select of [show, kind, sort]) select.addEventListener('change', () => load());
 
-    return el('details', { className: 'vellum-browse', ontoggle: (e) => e.target.open && !results.childElementCount && load() },
-        el('summary', { textContent: 'Browse Vellum' }),
-        el('div', { className: 'vellum-row' }, show, kind, sort),
+    const section = el('details', { className: 'vellum-browse', ontoggle: (e) => e.target.open && !results.childElementCount && reload() },
+        el('summary', { textContent: 'Browse' }),
+        el('div', { className: 'vellum-row' }, siteSel, show),
+        el('div', { className: 'vellum-row' }, kind, sort),
         el('div', { className: 'vellum-row' }, query, button('Search', () => load())),
         results,
         el('div', { className: 'vellum-row' }, more, addAll));
+    // When sites or keys change, start over if Browse is open, else on next open.
+    refreshBrowseSites = () => {
+        results.replaceChildren();
+        fillSites();
+        if (section.open) reload();
+    };
+    fillSites();
+    return section;
 }
 
 function resultCard(kind, item) {
@@ -630,39 +811,99 @@ function resultCard(kind, item) {
         add);
 }
 
-function keySection() {
-    const s = settings();
-    const key = el('input', { className: 'text_pole', type: 'password', placeholder: 'vlm_…', value: s.apiKey, autocomplete: 'off' });
-    const address = el('input', { className: 'text_pole', type: 'url', value: s.site });
+function siteRow(site, render) {
+    const label = el('input', { className: 'text_pole', type: 'text', placeholder: 'Name (Check fills it in)', value: site.label ?? '' });
+    const address = el('input', { className: 'text_pole', type: 'url', placeholder: 'https://…', value: site.url ?? '' });
+    const key = el('input', { className: 'text_pole', type: 'password', placeholder: 'vlm_… or scr_…', value: site.apiKey ?? '', autocomplete: 'off' });
     const state = el('small', { className: 'vellum-muted' });
-    const save = () => {
-        s.apiKey = key.value.trim();
-        s.site = address.value.trim() || DEFAULT_SITE;
-        ctx().saveSettingsDebounced();
+    const help = el('small', { className: 'vellum-muted' });
+    const showHelp = () => {
+        help.replaceChildren();
+        if (site.url) {
+            help.append('Make a key on that site under ',
+                el('a', { href: `${site.url}/settings`, target: '_blank', rel: 'noopener', textContent: 'Settings → API keys' }),
+                '. It is read-only.');
+        }
     };
-    key.addEventListener('change', save);
-    address.addEventListener('change', save);
+    const save = () => {
+        const url = normalizeUrl(address.value) ?? '';
+        if (url !== site.url) {
+            // A new address is a new site until Check says what it is.
+            delete site.name;
+            delete site.kinds;
+        }
+        site.url = url;
+        address.value = url;
+        site.label = label.value.trim();
+        site.apiKey = key.value.trim();
+        saveSettings();
+        showHelp();
+        refreshBrowseSites();
+    };
+    for (const input of [label, address, key]) input.addEventListener('change', save);
+
     const check = async () => {
         save();
+        if (!site.url) {
+            state.textContent = 'Enter the site address first.';
+            return;
+        }
+        const twin = settings().sites.find((x) => x !== site && x.url && originKey(x.url) === originKey(site.url));
+        if (twin) {
+            state.textContent = `"${siteLabel(twin)}" already uses this address.`;
+            return;
+        }
         state.textContent = 'Checking…';
         try {
-            const me = await api('me');
+            const me = await api(site, 'me');
+            remember(site, me);
+            if (!site.label) {
+                site.label = site.name;
+                label.value = site.name;
+                saveSettings();
+            }
             const ratings = [me.content?.show_nsfw && 'NSFW', me.content?.show_nsfl && 'NSFL'].filter(Boolean).join(' and ');
-            state.textContent = `Connected. ${ratings ? `${ratings} shown` : 'SFW only'} (change that in Vellum's Ratings settings).`;
+            const offers = site.kinds.map((k) => ({ cards: 'characters', lorebooks: 'lorebooks', personas: 'personas' })[k] ?? k).join(', ');
+            state.textContent = `Connected to ${site.name}. ${ratings ? `${ratings} shown` : 'SFW only'} (change that in its Ratings settings). Offers ${offers}.`;
+            refreshBrowseSites();
         } catch (error) {
             state.textContent = error.message;
         }
     };
-    const help = el('small', { className: 'vellum-muted' }, 'Make a key on Vellum under ',
-        el('a', { href: `${site()}/settings`, target: '_blank', rel: 'noopener', textContent: 'Settings → API keys' }),
-        '. It is read-only.');
-    return el('details', { className: 'vellum-key', open: !s.apiKey },
-        el('summary', { textContent: 'API key' }),
+
+    const remove = site.id === 'vellum' ? null : button('Remove', () => {
+        const s = settings();
+        s.sites = s.sites.filter((x) => x !== site);
+        if (s.defaultSite === site.id) s.defaultSite = 'vellum';
+        saveSettings();
+        render();
+        refreshBrowseSites();
+    }, 'vellum-remove');
+
+    showHelp();
+    return el('div', { className: 'vellum-site' },
+        el('div', { className: 'vellum-row' }, label, remove),
+        address,
         el('div', { className: 'vellum-row' }, key, button('Check', check)),
         help,
-        state,
-        el('label', { className: 'vellum-muted', textContent: 'Site address' }),
-        address);
+        state);
+}
+
+function sitesSection() {
+    const list = el('div', { className: 'vellum-sites' });
+    const render = () => list.replaceChildren(...settings().sites.map((site) => siteRow(site, render)));
+    const add = button('Add a site', () => {
+        settings().sites.push({ id: `s${Date.now().toString(36)}`, label: '', url: '', apiKey: '' });
+        saveSettings();
+        render();
+        list.lastElementChild?.querySelector('input[type=url]')?.focus();
+    }, 'vellum-more');
+    render();
+    return el('details', { className: 'vellum-key', open: !settings().sites.some((x) => x.apiKey?.trim()) },
+        el('summary', { textContent: 'Sites and API keys' }),
+        el('small', { className: 'vellum-muted' }, 'Vellum, and any other site with the same API (such as a Scriptorium). A link goes to the site its address belongs to; links without an address go to Vellum.'),
+        list,
+        add);
 }
 
 function mountPanel() {
@@ -673,11 +914,13 @@ function mountPanel() {
         el('div', { className: 'inline-drawer-toggle inline-drawer-header' },
             el('b', { textContent: 'Vellum' }),
             el('div', { className: 'inline-drawer-icon fa-solid fa-circle-chevron-down down' })),
-        el('div', { className: 'inline-drawer-content' }, addRow(), statusLine, browseSection(), keySection())));
+        el('div', { className: 'inline-drawer-content' }, addRow(), statusLine, browseSection(), sitesSection())));
 }
 
+const KIND_API = { character: 'cards', lorebook: 'lorebooks', persona: 'personas' };
+
 async function askForLinks(what) {
-    const text = await callGenericPopup(`Paste one or more Vellum ${what} links:`, POPUP_TYPE.INPUT, '', { rows: 3, okButton: 'Add' });
+    const text = await callGenericPopup(`Paste one or more ${what} links from ${siteNames(KIND_API[what])}:`, POPUP_TYPE.INPUT, '', { rows: 3, okButton: 'Add' });
     if (text) await addFromText(text);
 }
 
@@ -695,8 +938,8 @@ function mountButtons() {
         const anchor = document.getElementById(spot.anchor);
         if (!anchor || document.getElementById(spot.id)) continue;
         const btn = spot.icon
-            ? el('div', { id: spot.id, className: 'menu_button fa-solid fa-feather-pointed', title: 'Add from Vellum' })
-            : el('div', { id: spot.id, className: 'menu_button menu_button_icon', title: 'Add a persona from Vellum' },
+            ? el('div', { id: spot.id, className: 'menu_button fa-solid fa-feather-pointed', title: 'Add from a link (Vellum or another site you added)' })
+            : el('div', { id: spot.id, className: 'menu_button menu_button_icon', title: 'Add a persona from a Vellum link' },
                 el('i', { className: 'fa-solid fa-feather-pointed fa-fw' }),
                 el('div', { textContent: 'Vellum' }));
         btn.addEventListener('click', () => askForLinks(spot.what));
@@ -726,9 +969,10 @@ function registerCommand() {
     if (!SlashCommandParser?.addCommandObject) return;
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'vellum',
-        helpString: 'Add a character, lorebook or persona from a Vellum link. Example: <code>/vellum https://vellum.thecentralempire.com/c/123</code>',
+        aliases: ['scriptorium'],
+        helpString: 'Add a character, lorebook or persona from a link to Vellum or another site listed under Extensions → Vellum. Example: <code>/vellum https://vellum.thecentralempire.com/c/123</code>',
         unnamedArgumentList: [SlashCommandArgument.fromProps({
-            description: 'Vellum link(s)',
+            description: 'link(s)',
             typeList: [ARGUMENT_TYPE.STRING],
             isRequired: true,
         })],
